@@ -1,0 +1,104 @@
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: ["**"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # llvmpipe (software rasterizer) gives the GL context GPU-path code needs
+  # without a display server GPU.
+  LIBGL_ALWAYS_SOFTWARE: "1"
+  GALLIUM_DRIVER: llvmpipe
+
+jobs:
+  test:
+    name: Test / ${{ matrix.features }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [default, all-features]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev \
+            libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
+            libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev \
+            libxkbcommon-dev mesa-vulkan-drivers libvulkan1 \
+            libwebkitgtk-6.0-dev xvfb libgl1-mesa-dri
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: cargo nextest run
+        if: matrix.features == 'default'
+        run: xvfb-run -a cargo nextest run
+      - name: cargo nextest run --all-features
+        if: matrix.features == 'all-features'
+        run: xvfb-run -a cargo nextest run --all-features
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev \
+            libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
+            libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev \
+            libxkbcommon-dev mesa-vulkan-drivers libvulkan1 \
+            libwebkitgtk-6.0-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # The WebKitGTK-linked shape is a different body of code (the FFI layer
+      # only exists when pkg-config finds webkitgtk-6.0); lint both.
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev \
+            libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
+            libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev \
+            libxkbcommon-dev mesa-vulkan-drivers libvulkan1 \
+            libwebkitgtk-6.0-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-features
+
+  # Every host but Linux compiles this crate to an empty library; keep that
+  # boundary compiling so cross-platform workspaces can depend on it.
+  non-linux:
+    name: Non-Linux stub / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets --all-features
