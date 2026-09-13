@@ -44,4 +44,21 @@ jobs:
             echo "No unyanked waterui-gtk on crates.io; this release establishes the baseline."
           fi
       - if: steps.baseline.outputs.exists == 'true'
+        id: git-deps
+        run: |
+          # While `waterui-*` dependencies are git-pinned (plus the
+          # `[patch.crates-io]` redirect that keeps one copy of each in the
+          # graph), semver-checks cannot compare against a registry baseline:
+          # it builds the crate through a harness project where `[patch]` does
+          # not apply, and the baseline's `waterui-core` would be a different
+          # source than the current one anyway. The publish gate still holds —
+          # `cargo publish` strips `git`/`[patch]` and the dry-run verify
+          # compiles against the registry versions.
+          if grep -q 'git = "https://github.com/water-rs/waterui"' Cargo.toml; then
+            echo "pinned=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Semver baseline skipped::waterui-* dependencies are git-pinned; API-vs-registry-baseline comparison is invalid until they return to registry deps."
+          else
+            echo "pinned=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.baseline.outputs.exists == 'true' && steps.git-deps.outputs.pinned == 'false'
         uses: obi1kenobi/cargo-semver-checks-action@v2
