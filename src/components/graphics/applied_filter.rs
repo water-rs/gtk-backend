@@ -401,7 +401,7 @@ impl FilteredHost {
 }
 
 /// Builds the filtered-container widget hosting `content`.
-pub fn render_applied_filter(filter: AppliedFilter, content: Widget) -> Widget {
+pub fn render_applied_filter(mut filter: AppliedFilter, content: Widget) -> Widget {
     let host = FilteredHost::new();
     content.set_parent(&host);
     let redraw_handle = filter.redraw_handle();
