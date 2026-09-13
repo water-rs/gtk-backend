@@ -1379,13 +1379,19 @@ impl GtkRenderer {
         Self::register_passthrough_metadata::<NavigationTransitionSource>(dispatcher);
         Self::register_passthrough_metadata::<NavigationTransitionDestination>(dispatcher);
 
-        dispatcher.register::<Metadata<AppliedFilter>>(|_state, _ctx, _metadata, _env| {
-            panic!(
-                "AppliedFilter is unsupported on the GTK native backend because GTK does not \
-                 expose its rendered widget texture to wgpu without a GPU-to-CPU readback; \
-                 use a self-drawn backend for GPU filters"
-            )
-        });
+        // Metadata<AppliedFilter> - capture the child through the snapshot
+        // pipeline, run the filtrate pipeline on wgpu, and present the
+        // filtered GL texture through GTK's share-group compositor.
+        Self::register_with_renderer::<Metadata<AppliedFilter>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let content = renderer.render_any(metadata.content, env);
+                crate::components::graphics::applied_filter::render_applied_filter(
+                    metadata.value,
+                    content,
+                )
+            },
+        );
 
         // Ignorable metadata with no native semantic realization.
         Self::register_ignorable_metadata::<MaterialBackground>(dispatcher);

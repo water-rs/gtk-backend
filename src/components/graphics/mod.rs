@@ -1,7 +1,9 @@
 //! GTK widget implementations for `WaterUI` graphics components.
 
+pub(crate) mod applied_filter;
 pub mod clip_shape_widget;
 pub mod color;
+pub(crate) mod gl_util;
 pub mod gpu_surface;
 pub mod gradient;
 pub mod picture;
