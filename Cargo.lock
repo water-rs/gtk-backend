@@ -6835,6 +6835,7 @@ name = "waterui-gtk"
 version = "0.1.3"
 dependencies = [
  "executor-core",
+ "filtrate",
  "gdk4",
  "glib",
  "glow",
