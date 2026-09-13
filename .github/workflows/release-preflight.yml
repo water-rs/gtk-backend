@@ -1,0 +1,47 @@
+name: Release preflight
+
+# crates.io versions are immutable, so the one unrecoverable mistake is
+# publishing a version number that already exists while the crate behind it has
+# changed. release-plz runs this check when preparing a release PR; this job
+# exists so it cannot silently lapse.
+
+on:
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  semver:
+    name: Local API vs published baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      # cargo-semver-checks builds the crate's rustdoc, and the crate links
+      # GTK4.
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev \
+            libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
+            libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev \
+            libxkbcommon-dev libwebkitgtk-6.0-dev
+      # cargo-semver-checks pins the baseline to an exact version, so it needs a
+      # published version that still resolves — a crate can be in the index with
+      # every version yanked, and then there is nothing to compare against.
+      - id: baseline
+        run: |
+          set -euo pipefail
+          if curl -sfL https://index.crates.io/wa/te/waterui-gtk | grep -q '"yanked":false'; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "No unyanked waterui-gtk on crates.io; this release establishes the baseline."
+          fi
+      - if: steps.baseline.outputs.exists == 'true'
+        uses: obi1kenobi/cargo-semver-checks-action@v2
