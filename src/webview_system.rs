@@ -30,6 +30,12 @@ type JsHandler = Rc<waterui_webview::ScriptMessageHandler>;
 /// at all — it fast-fails — and the two arms still have to name one type.
 type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
 
+#[cfg(not(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+)))]
 const WEBKIT_FEATURE_MSG: &str = "WebView requires waterui-gtk feature `webkitgtk` and linkable WebKitGTK 6 libraries on Linux (fast-fail: no placeholder backend)";
 
 /// The fast-fail the future-returning handle methods take when no `WebKitGTK`
@@ -340,16 +346,22 @@ mod webkitgtk {
     }
 
     pub(super) fn create_webview() -> WebViewParts {
+        // SAFETY: `webkit_web_view_new` has no preconditions; a null return is
+        // caught by the `NonNull` wrapper.
         let ptr = NonNull::new(unsafe { webkit_web_view_new() })
             .expect("webkit_web_view_new returned null (fast-fail)");
 
+        // SAFETY: `ptr` is the live `WebKitWebView` just created above.
         let manager =
             NonNull::new(unsafe { webkit_web_view_get_user_content_manager(ptr.as_ptr()) })
                 .expect("webkit_web_view_get_user_content_manager returned null (fast-fail)");
 
+        // SAFETY: `ptr` is the live `WebKitWebView` just created above.
         let data_manager =
             NonNull::new(unsafe { webkit_web_view_get_website_data_manager(ptr.as_ptr()) })
                 .expect("webkit_web_view_get_website_data_manager returned null (fast-fail)");
+        // SAFETY: `data_manager` is the live website data manager of the view
+        // created above.
         let cookie_manager = NonNull::new(unsafe {
             webkit_website_data_manager_get_cookie_manager(data_manager.as_ptr())
         })
@@ -381,6 +393,8 @@ mod webkitgtk {
         if ptr.is_null() {
             String::new()
         } else {
+            // SAFETY: callers only hand in `*const c_char` produced by WebKitGTK
+            // getters, which return valid NUL-terminated strings.
             unsafe { CStr::from_ptr(ptr) }
                 .to_string_lossy()
                 .into_owned()
@@ -389,41 +403,59 @@ mod webkitgtk {
 
     pub(super) fn load_uri(ptr: NonNull<WebKitWebView>, uri: &str) {
         if let Some(cstr) = cstring(uri) {
+            // SAFETY: `ptr` is a live `WebKitWebView`; `cstr` is a live
+            // NUL-terminated string for the duration of the call.
             unsafe { webkit_web_view_load_uri(ptr.as_ptr(), cstr.as_ptr()) };
         }
     }
 
     pub(super) fn go_back(ptr: NonNull<WebKitWebView>) {
+        // SAFETY: `ptr` is a live `WebKitWebView`; the navigation call has no
+        // additional preconditions.
         unsafe { webkit_web_view_go_back(ptr.as_ptr()) };
     }
 
     pub(super) fn go_forward(ptr: NonNull<WebKitWebView>) {
+        // SAFETY: `ptr` is a live `WebKitWebView`; the navigation call has no
+        // additional preconditions.
         unsafe { webkit_web_view_go_forward(ptr.as_ptr()) };
     }
 
     pub(super) fn stop(ptr: NonNull<WebKitWebView>) {
+        // SAFETY: `ptr` is a live `WebKitWebView`; the navigation call has no
+        // additional preconditions.
         unsafe { webkit_web_view_stop_loading(ptr.as_ptr()) };
     }
 
     pub(super) fn reload(ptr: NonNull<WebKitWebView>) {
+        // SAFETY: `ptr` is a live `WebKitWebView`; the navigation call has no
+        // additional preconditions.
         unsafe { webkit_web_view_reload(ptr.as_ptr()) };
     }
 
     pub(super) fn can_go_back(ptr: NonNull<WebKitWebView>) -> bool {
+        // SAFETY: `ptr` is a live `WebKitWebView`; the getter has no additional
+        // preconditions.
         unsafe { webkit_web_view_can_go_back(ptr.as_ptr()) != 0 }
     }
 
     pub(super) fn can_go_forward(ptr: NonNull<WebKitWebView>) -> bool {
+        // SAFETY: `ptr` is a live `WebKitWebView`; the getter has no additional
+        // preconditions.
         unsafe { webkit_web_view_can_go_forward(ptr.as_ptr()) != 0 }
     }
 
     pub(super) fn set_user_agent(ptr: NonNull<WebKitWebView>, user_agent: &str) {
         if let Some(cstr) = cstring(user_agent) {
+            // SAFETY: `ptr` is a live `WebKitWebView`; `cstr` is a live
+            // NUL-terminated string for the duration of the call.
             unsafe { webkit_web_view_set_custom_user_agent(ptr.as_ptr(), cstr.as_ptr()) };
         }
     }
 
     pub(super) fn current_uri(ptr: NonNull<WebKitWebView>) -> String {
+        // SAFETY: `ptr` is a live `WebKitWebView`; the returned string is
+        // WebKit-owned and stays valid for `cstr_to_string` below.
         let raw = unsafe { webkit_web_view_get_uri(ptr.as_ptr()) };
         cstr_to_string(raw)
     }
@@ -468,7 +500,9 @@ mod webkitgtk {
         });
         let allow_list = allow_pointers
             .as_ref()
-            .map_or(std::ptr::null(), |pointers| pointers.as_ptr());
+            .map_or(std::ptr::null(), std::vec::Vec::as_ptr);
+        // SAFETY: `source`, `allow_list` and the strings behind it are live
+        // NUL-terminated buffers for the call, and WebKit copies what it keeps.
         let script = unsafe {
             webkit_user_script_new(
                 source.as_ptr(),
@@ -481,6 +515,8 @@ mod webkitgtk {
         if script.is_null() {
             return;
         }
+        // SAFETY: `manager` is a live `WebKitUserContentManager` and `script`
+        // the live script created above; the unref balances that ownership.
         unsafe {
             webkit_user_content_manager_add_script(manager.as_ptr(), script);
             webkit_user_script_unref(script);
@@ -488,6 +524,7 @@ mod webkitgtk {
     }
 
     pub(super) fn remove_all_scripts(manager: NonNull<WebKitUserContentManager>) {
+        // SAFETY: `manager` is a live `WebKitUserContentManager`.
         unsafe { webkit_user_content_manager_remove_all_scripts(manager.as_ptr()) };
     }
 
@@ -498,6 +535,8 @@ mod webkitgtk {
         let Some(name) = cstring(name) else {
             return false;
         };
+        // SAFETY: `manager` is a live `WebKitUserContentManager`; `name` is a
+        // live NUL-terminated string for the call.
         unsafe {
             webkit_user_content_manager_register_script_message_handler(
                 manager.as_ptr(),
@@ -514,6 +553,8 @@ mod webkitgtk {
         let Some(name) = cstring(name) else {
             return;
         };
+        // SAFETY: `manager` is a live `WebKitUserContentManager`; `name` is a
+        // live NUL-terminated string for the call.
         unsafe {
             webkit_user_content_manager_unregister_script_message_handler(
                 manager.as_ptr(),
@@ -532,6 +573,9 @@ mod webkitgtk {
         let Some(script) = cstring(script) else {
             return Err(String::from("JavaScript contains interior NUL byte"));
         };
+        // SAFETY: `ptr` is a live `WebKitWebView`; `script` is NUL-terminated
+        // for the call; `user_data` ownership moves to the async callback the
+        // caller registered.
         unsafe {
             webkit_web_view_evaluate_javascript(
                 ptr.as_ptr(),
@@ -552,8 +596,11 @@ mod webkitgtk {
         result: *mut gio::ffi::GAsyncResult,
     ) -> Result<*mut JSCValue, String> {
         let mut error: *mut glib::ffi::GError = std::ptr::null_mut();
-        let value =
-            unsafe { webkit_web_view_evaluate_javascript_finish(ptr.as_ptr(), result, &mut error) };
+        // SAFETY: `result` is the `GAsyncResult` WebKit hands the callback this
+        // finish pairs with; `error` is a valid out-pointer.
+        let value = unsafe {
+            webkit_web_view_evaluate_javascript_finish(ptr.as_ptr(), result, &raw mut error)
+        };
         finished(value, error, "JavaScript evaluation failed")
     }
 
@@ -572,6 +619,8 @@ mod webkitgtk {
         let Some(body) = cstring(body) else {
             return Err(String::from("JavaScript contains interior NUL byte"));
         };
+        // SAFETY: `ptr` is a live `WebKitWebView`; `body` is NUL-terminated for
+        // the call; `user_data` ownership moves to the async callback.
         unsafe {
             webkit_web_view_call_async_javascript_function(
                 ptr.as_ptr(),
@@ -593,8 +642,14 @@ mod webkitgtk {
         result: *mut gio::ffi::GAsyncResult,
     ) -> Result<*mut JSCValue, String> {
         let mut error: *mut glib::ffi::GError = std::ptr::null_mut();
+        // SAFETY: `result` is the `GAsyncResult` WebKit hands the callback this
+        // finish pairs with; `error` is a valid out-pointer.
         let value = unsafe {
-            webkit_web_view_call_async_javascript_function_finish(ptr.as_ptr(), result, &mut error)
+            webkit_web_view_call_async_javascript_function_finish(
+                ptr.as_ptr(),
+                result,
+                &raw mut error,
+            )
         };
         finished(value, error, "JavaScript function call failed")
     }
@@ -606,7 +661,10 @@ mod webkitgtk {
         failure: &str,
     ) -> Result<*mut JSCValue, String> {
         if !error.is_null() {
+            // SAFETY: the `_finish` call filled `error` with a live `GError`;
+            // its `message` field is a valid NUL-terminated string.
             let message = cstr_to_string(unsafe { (*error).message });
+            // SAFETY: frees the `GError` just read; the error is not used again.
             unsafe { glib::ffi::g_error_free(error) };
             return Err(if message.is_empty() {
                 failure.to_owned()
@@ -627,7 +685,7 @@ mod webkitgtk {
     /// ported origin becomes the pattern for its host, and the port is enforced
     /// exactly where it can be: the origin check on every bridge message.
     ///
-    /// The URI is taken apart by GLib rather than by string surgery here.
+    /// The URI is taken apart by `GLib` rather than by string surgery here.
     pub(super) fn injection_pattern(rule: &waterui_webview::OriginRule) -> Str {
         let waterui_webview::OriginRule::Exact(origin) = rule else {
             return rule.injection_pattern();
@@ -651,16 +709,21 @@ mod webkitgtk {
     /// document — which is exactly the case that cannot be authenticated.
     pub(super) fn security_origin(uri: &str) -> Option<Str> {
         let uri = cstring(uri)?;
+        // SAFETY: `uri` is a live NUL-terminated string for the call.
         let origin = unsafe { webkit_security_origin_new_for_uri(uri.as_ptr()) };
         if origin.is_null() {
             return None;
         }
+        // SAFETY: `origin` is the live `WebKitSecurityOrigin` created above.
         let raw = unsafe { webkit_security_origin_to_string(origin) };
+        // SAFETY: balances the reference `webkit_security_origin_new_for_uri`
+        // returned.
         unsafe { webkit_security_origin_unref(origin) };
         if raw.is_null() {
             return None;
         }
         let text = cstr_to_string(raw);
+        // SAFETY: `raw` is the GLib-allocated string `to_string` transferred.
         unsafe { glib::ffi::g_free(raw.cast()) };
         Some(Str::from(text))
     }
@@ -669,26 +732,37 @@ mod webkitgtk {
         if value.is_null() {
             return Str::from_static("null");
         }
+        // SAFETY: `value` is the live `JSCValue` a `_finish` call returned;
+        // the null check above excluded the null case.
         if unsafe { jsc_value_is_null(value) != 0 || jsc_value_is_undefined(value) != 0 } {
             return Str::from_static("null");
         }
+        // SAFETY: `value` is a live `JSCValue`.
         if unsafe { jsc_value_is_string(value) != 0 } {
+            // SAFETY: `value` is a live `JSCValue`; the returned string is
+            // GLib-allocated and freed below once copied.
             let raw = unsafe { jsc_value_to_string(value) };
             let text = cstr_to_string(raw);
             if !raw.is_null() {
+                // SAFETY: `raw` is the GLib-allocated string just copied out.
                 unsafe { glib::ffi::g_free(raw.cast()) };
             }
             return Str::from(text);
         }
+        // SAFETY: `value` is a live `JSCValue`.
         let raw_json = unsafe { jsc_value_to_json(value, 0) };
         if !raw_json.is_null() {
             let text = cstr_to_string(raw_json);
+            // SAFETY: `raw_json` is the GLib-allocated string just copied out.
             unsafe { glib::ffi::g_free(raw_json.cast()) };
             return Str::from(text);
         }
+        // SAFETY: `value` is a live `JSCValue`; the returned string is
+        // GLib-allocated and freed below once copied.
         let raw = unsafe { jsc_value_to_string(value) };
         let text = cstr_to_string(raw);
         if !raw.is_null() {
+            // SAFETY: `raw` is the GLib-allocated string just copied out.
             unsafe { glib::ffi::g_free(raw.cast()) };
         }
         Str::from(text)
@@ -698,33 +772,43 @@ mod webkitgtk {
         if value.is_null() {
             return;
         }
+        // SAFETY: `value` is a live `JSCValue` whose reference the caller owned.
         unsafe { glib::gobject_ffi::g_object_unref(value.cast()) };
     }
 
     pub(super) fn policy_ignore(decision: *mut WebKitPolicyDecision) {
+        // SAFETY: `decision` is the live decision the `decide-policy` signal
+        // handler was given.
         unsafe { webkit_policy_decision_ignore(decision) };
     }
 
     pub(super) fn response_from_decision(
         decision: *mut WebKitPolicyDecision,
     ) -> *mut WebKitURIResponse {
+        // SAFETY: `decision` is the live decision the signal handler was given.
         unsafe { webkit_response_policy_decision_get_response(decision.cast()) }
     }
 
     pub(super) fn response_status(response: *mut WebKitURIResponse) -> u32 {
+        // SAFETY: `response` is the live response WebKit handed back from the
+        // decision.
         unsafe { webkit_uri_response_get_status_code(response) }
     }
 
     pub(super) fn response_uri(response: *mut WebKitURIResponse) -> String {
+        // SAFETY: `response` is a live `WebKitURIResponse`; the returned string
+        // is WebKit-owned and stays valid for `cstr_to_string`.
         let uri = unsafe { webkit_uri_response_get_uri(response) };
         cstr_to_string(uri)
     }
 
     pub(super) fn response_redirect_target(response: *mut WebKitURIResponse) -> Option<String> {
+        // SAFETY: `response` is a live `WebKitURIResponse`.
         let headers = unsafe { webkit_uri_response_get_http_headers(response) };
         if headers.is_null() {
             return None;
         }
+        // SAFETY: `headers` is the live `SoupMessageHeaders` obtained above.
         let location = unsafe { soup_message_headers_get_one(headers, c"Location".as_ptr()) };
         if location.is_null() {
             None
@@ -744,6 +828,8 @@ mod webkitgtk {
         };
         let origin = glib::Uri::parse(origin, glib::UriFlags::NONE)
             .unwrap_or_else(|error| panic!("WebKit reported an unparseable document URI: {error}"));
+        // SAFETY: `header` is a live NUL-terminated string and `origin` a live
+        // `GUri` for the duration of the call.
         unsafe { soup_cookie_parse(header.as_ptr(), origin.to_glib_none().0) }
     }
 
@@ -753,6 +839,9 @@ mod webkitgtk {
         callback: gio::ffi::GAsyncReadyCallback,
         user_data: *mut c_void,
     ) {
+        // SAFETY: `manager` is a live `WebKitCookieManager`; `cookie` is a live
+        // `SoupCookie` whose ownership WebKit borrows for the call;
+        // `user_data` ownership moves to the async callback.
         unsafe {
             webkit_cookie_manager_add_cookie(
                 manager.as_ptr(),
@@ -768,6 +857,8 @@ mod webkitgtk {
         if cookie.is_null() {
             return;
         }
+        // SAFETY: `cookie` is a `SoupCookie` the caller owns (returned by
+        // `soup_cookie_parse` or a cookie list), freed exactly once here.
         unsafe { soup_cookie_free(cookie) };
     }
 
@@ -776,11 +867,16 @@ mod webkitgtk {
         result: *mut gio::ffi::GAsyncResult,
     ) -> Result<(), String> {
         let mut error: *mut glib::ffi::GError = std::ptr::null_mut();
+        // SAFETY: `result` is the `GAsyncResult` WebKit hands the callback this
+        // finish pairs with; `error` is a valid out-pointer.
         let ok = unsafe {
-            webkit_cookie_manager_add_cookie_finish(manager.as_ptr(), result, &mut error)
+            webkit_cookie_manager_add_cookie_finish(manager.as_ptr(), result, &raw mut error)
         };
         if !error.is_null() {
+            // SAFETY: the finish call filled `error` with a live `GError`; its
+            // `message` field is a valid NUL-terminated string.
             let message = cstr_to_string(unsafe { (*error).message });
+            // SAFETY: frees the `GError` just read; it is not used again.
             unsafe { glib::ffi::g_error_free(error) };
             return Err(if message.is_empty() {
                 String::from("cookie add failed")
@@ -803,6 +899,9 @@ mod webkitgtk {
         let Some(uri) = cstring(uri) else {
             return;
         };
+        // SAFETY: `manager` is a live `WebKitCookieManager`; `uri` is a live
+        // NUL-terminated string for the call; `user_data` ownership moves to
+        // the async callback.
         unsafe {
             webkit_cookie_manager_get_cookies(
                 manager.as_ptr(),
@@ -819,11 +918,16 @@ mod webkitgtk {
         result: *mut gio::ffi::GAsyncResult,
     ) -> Result<*mut glib::ffi::GList, String> {
         let mut error: *mut glib::ffi::GError = std::ptr::null_mut();
+        // SAFETY: `result` is the `GAsyncResult` WebKit hands the callback this
+        // finish pairs with; `error` is a valid out-pointer.
         let list = unsafe {
-            webkit_cookie_manager_get_cookies_finish(manager.as_ptr(), result, &mut error)
+            webkit_cookie_manager_get_cookies_finish(manager.as_ptr(), result, &raw mut error)
         };
         if !error.is_null() {
+            // SAFETY: the finish call filled `error` with a live `GError`; its
+            // `message` field is a valid NUL-terminated string.
             let message = cstr_to_string(unsafe { (*error).message });
+            // SAFETY: frees the `GError` just read; it is not used again.
             unsafe { glib::ffi::g_error_free(error) };
             return Err(if message.is_empty() {
                 String::from("cookie query failed")
@@ -835,11 +939,14 @@ mod webkitgtk {
     }
 
     pub(super) fn cookie_to_set_cookie_header(cookie: *mut SoupCookie) -> Option<String> {
+        // SAFETY: `cookie` is a live `SoupCookie` from the list WebKit
+        // returned; the string it hands back is GLib-allocated.
         let raw = unsafe { soup_cookie_to_set_cookie_header(cookie) };
         if raw.is_null() {
             return None;
         }
         let text = cstr_to_string(raw);
+        // SAFETY: `raw` is the GLib-allocated string just copied out.
         unsafe { glib::ffi::g_free(raw.cast()) };
         Some(text)
     }
@@ -848,12 +955,17 @@ mod webkitgtk {
         if list.is_null() {
             return;
         }
+        // SAFETY: `soup_cookie_free` has the same shape as the `GDestroyNotify`
+        // `g_list_free_full` wants — one pointer in, nothing out; the transmute
+        // only renames the element type.
         let free_cookie = Some(unsafe {
             std::mem::transmute::<
                 unsafe extern "C" fn(*mut SoupCookie),
                 unsafe extern "C" fn(*mut c_void),
             >(soup_cookie_free)
         });
+        // SAFETY: `list` is the `GList` ownership WebKit transferred to us; the
+        // element free function matches the `SoupCookie` payload of every node.
         unsafe { glib::ffi::g_list_free_full(list, free_cookie) };
     }
 
@@ -861,15 +973,26 @@ mod webkitgtk {
         data: *mut c_void,
         _closure: *mut glib::gobject_ffi::GClosure,
     ) {
+        // SAFETY: `data` is the `Box<T>` `connect_signal` moved into
+        // `g_signal_connect_data`, handed back exactly once at closure finalise.
         unsafe { drop(Box::from_raw(data.cast::<T>())) };
     }
 
+    /// # Safety
+    ///
+    /// `instance` must be a live `GObject` that carries `detailed_signal`;
+    /// `callback` must have the signature that signal's C prototype declares.
+    /// `data` is boxed, handed to the signal, and reclaimed by `destroy_boxed`
+    /// when the closure is finalised — callers must not touch it after.
     pub(super) unsafe fn connect_signal<T>(
         instance: *mut glib::gobject_ffi::GObject,
         detailed_signal: &CStr,
         callback: glib::gobject_ffi::GCallback,
         data: T,
     ) -> c_ulong {
+        // SAFETY: the caller's contract above supplies a live `instance`, a
+        // valid signal name and a correctly-typed `callback`; `data` is boxed
+        // for the connection's lifetime and reclaimed by `destroy_boxed`.
         unsafe {
             glib::gobject_ffi::g_signal_connect_data(
                 instance,
@@ -883,6 +1006,8 @@ mod webkitgtk {
     }
 
     pub(super) fn disconnect_signal(instance: *mut glib::gobject_ffi::GObject, signal_id: c_ulong) {
+        // SAFETY: `signal_id` is the handler id `connect_signal` returned for
+        // this live `instance`.
         unsafe { glib::gobject_ffi::g_signal_handler_disconnect(instance, signal_id) };
     }
 }
@@ -1029,7 +1154,7 @@ impl GtkWebViewHandle {
         unix,
         not(target_os = "macos")
     ))]
-    fn install_observers(&self) {
+    fn install_notify_observers(&self) {
         assert!(
             self.widget.find_property("uri").is_some(),
             "GTK WebView missing `uri` property"
@@ -1069,6 +1194,7 @@ impl GtkWebViewHandle {
         let shared = self.shared.clone();
         self.widget
             .connect_notify_local(Some("estimated-load-progress"), move |obj, _| {
+                #[allow(clippy::cast_possible_truncation)]
                 let progress = obj.property::<f64>("estimated-load-progress") as f32;
                 shared.emit(WebViewEvent::Loading { progress });
                 if progress >= 1.0 {
@@ -1097,7 +1223,15 @@ impl GtkWebViewHandle {
                     can_go_forward: forward,
                 });
             });
+    }
 
+    #[cfg(all(
+        feature = "webkitgtk",
+        gtk_webkitgtk_link_available,
+        unix,
+        not(target_os = "macos")
+    ))]
+    fn install_signal_handlers(&self) {
         let webview_obj = self
             .native
             .ptr
@@ -1106,6 +1240,9 @@ impl GtkWebViewHandle {
 
         let decide_policy_signal =
             std::ffi::CString::new("decide-policy").expect("valid signal name");
+        // SAFETY: `on_decide_policy` has the `decide-policy` signal's C
+        // prototype; `GCallback` erases the signature, so the transmute only
+        // renames it.
         let decide_policy_callback = Some(unsafe {
             std::mem::transmute::<
                 unsafe extern "C" fn(
@@ -1120,6 +1257,8 @@ impl GtkWebViewHandle {
         let decide_policy_data = DecidePolicyData {
             shared: self.shared.clone(),
         };
+        // SAFETY: `webview_obj` is the live view's `GObject`, the signal name is
+        // a WebKitGTK signal, and the callback's type matches its prototype.
         unsafe {
             webkitgtk::connect_signal(
                 webview_obj,
@@ -1130,6 +1269,8 @@ impl GtkWebViewHandle {
         }
 
         let load_failed_signal = std::ffi::CString::new("load-failed").expect("valid signal name");
+        // SAFETY: `on_load_failed` has the `load-failed` signal's C prototype;
+        // `GCallback` erases the signature, so the transmute only renames it.
         let load_failed_callback = Some(unsafe {
             std::mem::transmute::<
                 unsafe extern "C" fn(
@@ -1145,6 +1286,8 @@ impl GtkWebViewHandle {
         let load_failed_data = LoadFailedData {
             shared: self.shared.clone(),
         };
+        // SAFETY: `webview_obj` is the live view's `GObject`, the signal name is
+        // a WebKitGTK signal, and the callback's type matches its prototype.
         unsafe {
             webkitgtk::connect_signal(
                 webview_obj,
@@ -1156,6 +1299,9 @@ impl GtkWebViewHandle {
 
         let tls_signal =
             std::ffi::CString::new("load-failed-with-tls-errors").expect("valid signal name");
+        // SAFETY: `on_load_failed_with_tls_errors` has the
+        // `load-failed-with-tls-errors` signal's C prototype; `GCallback` erases
+        // the signature, so the transmute only renames it.
         let tls_callback = Some(unsafe {
             std::mem::transmute::<
                 unsafe extern "C" fn(
@@ -1171,9 +1317,22 @@ impl GtkWebViewHandle {
         let tls_data = TlsFailedData {
             shared: self.shared.clone(),
         };
+        // SAFETY: `webview_obj` is the live view's `GObject`, the signal name is
+        // a WebKitGTK signal, and the callback's type matches its prototype.
         unsafe {
             webkitgtk::connect_signal(webview_obj, &tls_signal, tls_callback, tls_data);
         }
+    }
+
+    #[cfg(all(
+        feature = "webkitgtk",
+        gtk_webkitgtk_link_available,
+        unix,
+        not(target_os = "macos")
+    ))]
+    fn install_observers(&self) {
+        self.install_notify_observers();
+        self.install_signal_handlers();
     }
 
     /// Reinstalls every user script, restricted to the documents the bridge
@@ -1332,7 +1491,6 @@ impl WebViewHandle for GtkWebViewHandle {
         ))]
         {
             webkitgtk::go_back(self.native.ptr);
-            return;
         }
         #[cfg(not(all(
             feature = "webkitgtk",
@@ -1352,7 +1510,6 @@ impl WebViewHandle for GtkWebViewHandle {
         ))]
         {
             webkitgtk::go_forward(self.native.ptr);
-            return;
         }
         #[cfg(not(all(
             feature = "webkitgtk",
@@ -1371,8 +1528,7 @@ impl WebViewHandle for GtkWebViewHandle {
             not(target_os = "macos")
         ))]
         {
-            webkitgtk::load_uri(self.native.ptr, url);
-            return;
+            webkitgtk::load_uri(self.native.ptr, url.as_str());
         }
         #[cfg(not(all(
             feature = "webkitgtk",
@@ -1411,7 +1567,6 @@ impl WebViewHandle for GtkWebViewHandle {
                 }
             }
             self.rebuild_user_scripts();
-            return;
         }
         #[cfg(not(all(
             feature = "webkitgtk",
@@ -1466,6 +1621,9 @@ impl WebViewHandle for GtkWebViewHandle {
                 bridge::SEND_FUNCTION
             ))
             .expect("valid detailed signal");
+            // SAFETY: `on_script_message_received` has the
+            // `script-message-received` signal's C prototype; `GCallback` erases
+            // the signature, so the transmute only renames it.
             let callback = Some(unsafe {
                 std::mem::transmute::<
                     unsafe extern "C" fn(
@@ -1482,6 +1640,9 @@ impl WebViewHandle for GtkWebViewHandle {
                 view: self.widget.downgrade(),
             };
 
+            // SAFETY: `manager` is the live view's `WebKitUserContentManager`,
+            // the detailed signal name names a WebKitGTK signal, and the
+            // callback's type matches its prototype.
             let signal_id = unsafe {
                 webkitgtk::connect_signal(
                     self.native.manager.as_ptr().cast(),
@@ -1495,7 +1656,6 @@ impl WebViewHandle for GtkWebViewHandle {
                 .borrow_mut()
                 .insert(bridge::SEND_FUNCTION.to_owned(), signal_id);
             self.rebuild_user_scripts();
-            return;
         }
         #[cfg(not(all(
             feature = "webkitgtk",
@@ -1533,7 +1693,6 @@ impl WebViewHandle for GtkWebViewHandle {
             // Removing a name that was never registered is a no-op, matching every
             // other backend. The transport stays registered for the page's life.
             self.shared.handler_callbacks.borrow_mut().remove(name);
-            return;
         }
         #[cfg(not(all(
             feature = "webkitgtk",
@@ -1556,7 +1715,6 @@ impl WebViewHandle for GtkWebViewHandle {
         ))]
         {
             webkitgtk::stop(self.native.ptr);
-            return;
         }
         #[cfg(not(all(
             feature = "webkitgtk",
@@ -1576,7 +1734,6 @@ impl WebViewHandle for GtkWebViewHandle {
         ))]
         {
             webkitgtk::reload(self.native.ptr);
-            return;
         }
         #[cfg(not(all(
             feature = "webkitgtk",
@@ -1596,7 +1753,6 @@ impl WebViewHandle for GtkWebViewHandle {
         ))]
         {
             webkitgtk::set_user_agent(self.native.ptr, user_agent);
-            return;
         }
         #[cfg(not(all(
             feature = "webkitgtk",
@@ -1628,7 +1784,7 @@ impl WebViewHandle for GtkWebViewHandle {
             not(target_os = "macos")
         ))]
         {
-            return webkitgtk::can_go_back(self.native.ptr);
+            webkitgtk::can_go_back(self.native.ptr)
         }
         #[cfg(not(all(
             feature = "webkitgtk",
@@ -1647,7 +1803,7 @@ impl WebViewHandle for GtkWebViewHandle {
             not(target_os = "macos")
         ))]
         {
-            return webkitgtk::can_go_forward(self.native.ptr);
+            webkitgtk::can_go_forward(self.native.ptr)
         }
         #[cfg(not(all(
             feature = "webkitgtk",
@@ -1691,7 +1847,6 @@ impl WebViewHandle for GtkWebViewHandle {
                 Some(on_cookie_added),
                 Box::into_raw(Box::new(data)).cast(),
             );
-            return;
         }
         #[cfg(not(all(
             feature = "webkitgtk",
@@ -1887,7 +2042,7 @@ struct CookieQueryData {
     cookie_manager: std::ptr::NonNull<webkitgtk::WebKitCookieManager>,
 }
 
-/// One value a GLib async callback will produce, and the waker waiting for it.
+/// One value a `GLib` async callback will produce, and the waker waiting for it.
 #[cfg(all(
     feature = "webkitgtk",
     gtk_webkitgtk_link_available,
@@ -2031,6 +2186,9 @@ unsafe extern "C" fn on_javascript_evaluated(
     result: *mut gtk4::gio::ffi::GAsyncResult,
     user_data: *mut std::ffi::c_void,
 ) {
+    // SAFETY: `user_data` is the `JsEvalData` box `start_javascript` handed to
+    // `evaluate_javascript`; the async callback fires exactly once, so taking
+    // ownership back here cannot double-free.
     let data = unsafe { Box::from_raw(user_data.cast::<JsEvalData>()) };
     let outcome = match (data.finish)(webview_ptr(&data.view), result) {
         Ok(value) => {
@@ -2054,6 +2212,8 @@ unsafe extern "C" fn on_cookies_queried(
     result: *mut gtk4::gio::ffi::GAsyncResult,
     user_data: *mut std::ffi::c_void,
 ) {
+    // SAFETY: `user_data` is the `CookieQueryData` box `get_cookies` was
+    // started with; the async callback fires exactly once.
     let data = unsafe { Box::from_raw(user_data.cast::<CookieQueryData>()) };
     let cookies = match webkitgtk::get_cookies_finish(data.cookie_manager, result) {
         Ok(list) => {
@@ -2074,7 +2234,7 @@ unsafe extern "C" fn on_cookies_queried(
 
 /// Reads a `GList` of `SoupCookie` into the shared cookie type.
 ///
-/// A cookie WebKit hands back that this parser rejects is reported and skipped:
+/// A cookie `WebKit` hands back that this parser rejects is reported and skipped:
 /// one malformed cookie in the store used to abort the application from inside a
 /// getter.
 #[cfg(all(
@@ -2087,6 +2247,8 @@ fn collect_cookies(list: *mut gtk4::glib::ffi::GList) -> Vec<Cookie<'static>> {
     let mut cookies = Vec::new();
     let mut node = list;
     while !node.is_null() {
+        // SAFETY: `node` is a live `GList` node of the list WebKit returned;
+        // every element is a `SoupCookie` per `get_cookies_finish`'s contract.
         let cookie = unsafe { (*node).data.cast::<webkitgtk::SoupCookie>() };
         if let Some(header) = webkitgtk::cookie_to_set_cookie_header(cookie) {
             match Cookie::parse(header) {
@@ -2096,6 +2258,8 @@ fn collect_cookies(list: *mut gtk4::glib::ffi::GList) -> Vec<Cookie<'static>> {
                 }
             }
         }
+        // SAFETY: `node` is a live `GList` node; `next` stays valid for the
+        // loop's duration since nothing mutates the list.
         node = unsafe { (*node).next };
     }
     cookies
@@ -2112,6 +2276,8 @@ unsafe extern "C" fn on_cookie_added(
     result: *mut gtk4::gio::ffi::GAsyncResult,
     user_data: *mut std::ffi::c_void,
 ) {
+    // SAFETY: `user_data` is the `CookieAddData` box `add_cookie` was started
+    // with; the async callback fires exactly once.
     let data = unsafe { Box::from_raw(user_data.cast::<CookieAddData>()) };
     if let Err(err) = webkitgtk::add_cookie_finish(data.cookie_manager, result) {
         data.shared
@@ -2138,6 +2304,9 @@ unsafe extern "C" fn on_script_message_received(
     value: *mut webkitgtk::JSCValue,
     user_data: *mut std::ffi::c_void,
 ) {
+    // SAFETY: `user_data` is the `ScriptMessageData` box the signal connection
+    // owns for the connection's lifetime, so the borrow stays valid for the
+    // call.
     let data = unsafe { &*(user_data.cast::<ScriptMessageData>()) };
     let Some(view) = data.view.upgrade() else {
         tracing::warn!("a WaterUI bridge call arrived after its web view was destroyed");
@@ -2257,6 +2426,8 @@ unsafe extern "C" fn on_decide_policy(
         return 0;
     }
 
+    // SAFETY: `user_data` is the `DecidePolicyData` box the signal connection
+    // owns for the connection's lifetime.
     let data = unsafe { &*(user_data.cast::<DecidePolicyData>()) };
     if data.shared.redirects_enabled.borrow().get() {
         return 0;
@@ -2296,11 +2467,15 @@ unsafe extern "C" fn on_load_failed(
     error: *mut gtk4::glib::ffi::GError,
     user_data: *mut std::ffi::c_void,
 ) -> gtk4::glib::ffi::gboolean {
+    // SAFETY: `user_data` is the `LoadFailedData` box the signal connection
+    // owns for the connection's lifetime.
     let data = unsafe { &*(user_data.cast::<LoadFailedData>()) };
     assert!(
         !error.is_null(),
         "on_load_failed: WebKit passed a null GError pointer"
     );
+    // SAFETY: `error` is the live `GError` WebKit hands this signal; `message`
+    // is a valid NUL-terminated string.
     let message = webkitgtk::cstr_to_string(unsafe { (*error).message });
     data.shared
         .emit(WebViewEvent::Error(WebViewError::LoadFailed(Str::from(
@@ -2322,6 +2497,8 @@ unsafe extern "C" fn on_load_failed_with_tls_errors(
     errors: u32,
     user_data: *mut std::ffi::c_void,
 ) -> gtk4::glib::ffi::gboolean {
+    // SAFETY: `user_data` is the `TlsFailedData` box the signal connection owns
+    // for the connection's lifetime.
     let data = unsafe { &*(user_data.cast::<TlsFailedData>()) };
     let uri = webkitgtk::cstr_to_string(failing_uri);
     let message = format!("TLS error flags: 0x{errors:08x}");

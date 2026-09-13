@@ -1,12 +1,12 @@
 [package]
 name = "waterui-gtk"
-version = "0.1.0"
-edition.workspace = true
+version = "0.1.3"
+edition = "2024"
 authors = ["Lexo Liu"]
-license.workspace = true
-rust-version.workspace = true
-readme = "../../README.md"
-repository = "https://github.com/water-rs/waterui"
+license = "Apache-2.0 OR MIT"
+rust-version = "1.95"
+readme = "README.md"
+repository = "https://github.com/water-rs/gtk-backend"
 description = "GTK4 backend for WaterUI"
 keywords = ["ui", "gtk", "waterui", "gui", "backend"]
 categories = ["gui"]
@@ -16,43 +16,45 @@ categories = ["gui"]
 # compiles and is tested on every host even though the rest of this backend is
 # Linux only. Default features are off here: the GPU morph renderer is Linux-only
 # work, and the Linux entry below turns it back on.
-waterui-shape = { workspace = true, default-features = false }
+waterui-shape = { version = "0.1.2", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-waterui.workspace = true
-waterui-core.workspace = true
-waterui-backend-core = { workspace = true, features = ["widgets", "gestures"] }
-waterui-layout.workspace = true
-waterui-locale.workspace = true
-waterui-navigation.workspace = true
-waterui-text.workspace = true
-waterui-icon.workspace = true
-waterui-controls.workspace = true
-waterui-graphics = { workspace = true, features = ["gpu", "cpu-scene"] }
-waterui-shape.workspace = true
-waterui-form.workspace = true
-waterui-webview = { workspace = true, optional = true }
-nami.workspace = true
+waterui = "0.4.1"
+waterui-core = "0.3.2"
+waterui-backend-core = { version = "0.1.2", features = ["widgets", "gestures"] }
+waterui-layout = "0.3.2"
+waterui-locale = "0.1.2"
+waterui-navigation = "0.3.2"
+waterui-text = "0.4.1"
+waterui-icon = "0.3.2"
+waterui-controls = "0.3.2"
+waterui-graphics = { version = "0.4.1", features = ["gpu", "cpu-scene"] }
+waterui-shape = "0.1.2"
+waterui-form = "0.3.2"
+waterui-webview = { version = "0.4.1", optional = true }
+nami = "0.11.2"
 # Insertion order is the eviction order for the split destination cache.
 indexmap = "2"
 num-traits = { version = "0.2", default-features = false }
-tracing.workspace = true
-pin-project-lite.workspace = true
-executor-core.workspace = true
-native-executor.workspace = true
+tracing = "0.1"
+pin-project-lite = "0.2"
+executor-core = { version = "0.7.1", features = ["std"] }
+native-executor = "0.8.0"
 
-gtk4 = { workspace = true, features = ["v4_12"] }
-waterui-assets.workspace = true
-gdk4 = { workspace = true, features = ["v4_12"] }
-glib.workspace = true
-kurbo.workspace = true
+gtk4 = { version = "0.11", features = ["v4_12"] }
+waterui-assets = "0.1.2"
+gdk4 = { version = "0.11", features = ["v4_12"] }
+glib = "0.22"
+kurbo = "0.13"
 # Chromium's own physical-key table, used to name a GDK hardware keycode in the
 # W3C vocabulary the surface input events carry.
 keycode = "1.0"
 
 # GPU surface dependencies (wgpu is required for graphics views & filters).
-wgpu.workspace = true
-glow.workspace = true
+wgpu = "29.0.4"
+# Must match the `glow` version wgpu-hal links against, or GLES handles from
+# `wgpu::hal::gles` fail to unify with locally created ones.
+glow = "0.17"
 libloading = "0.9"
 
 [build-dependencies]
@@ -65,7 +67,23 @@ default = []
 webview-system = ["dep:waterui-webview", "webkitgtk"]
 webkitgtk = []
 
-[lints]
-workspace = true
+[lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = "warn"
+style = "warn"
+correctness = "warn"
+complexity = "warn"
+suspicious = "warn"
+perf = "warn"
+pedantic = "warn"
+nursery = "warn"
+cargo = "warn"
+# Every `unsafe` must state why it is sound, in a form the compiler checks.
+undocumented_unsafe_blocks = "warn"
+multiple_crate_versions = { level = "allow", priority = 1 }
+
 [package.metadata.cargo-machete]
 ignored = ["pkg-config"]
