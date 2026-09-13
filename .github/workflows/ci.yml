@@ -34,8 +34,10 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libglib2.0-dev libpango1.0-dev \
-            libgdk-pixbuf-2.0-dev libegl-dev libwayland-dev libxkbcommon-dev \
+          sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev \
+            libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
+            libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev \
+            libxkbcommon-dev mesa-vulkan-drivers libvulkan1 \
             libwebkitgtk-6.0-dev xvfb libgl1-mesa-dri
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
@@ -57,8 +59,10 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libglib2.0-dev libpango1.0-dev \
-            libgdk-pixbuf-2.0-dev libegl-dev libwayland-dev libxkbcommon-dev \
+          sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev \
+            libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
+            libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev \
+            libxkbcommon-dev mesa-vulkan-drivers libvulkan1 \
             libwebkitgtk-6.0-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
@@ -76,8 +80,10 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libglib2.0-dev libpango1.0-dev \
-            libgdk-pixbuf-2.0-dev libegl-dev libwayland-dev libxkbcommon-dev \
+          sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev \
+            libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
+            libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev \
+            libxkbcommon-dev mesa-vulkan-drivers libvulkan1 \
             libwebkitgtk-6.0-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features
