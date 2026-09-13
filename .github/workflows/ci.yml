@@ -38,15 +38,18 @@ jobs:
             libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
             libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev \
             libxkbcommon-dev mesa-vulkan-drivers libvulkan1 \
-            libwebkitgtk-6.0-dev xvfb libgl1-mesa-dri
+            libwebkitgtk-6.0-dev xvfb libgl1-mesa-dri openbox dbus-x11
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
+      # Focus tests need the toplevel to actually hold input focus, which no
+      # window gets under bare Xvfb: a minimal WM (openbox) grants it. The
+      # windowed tests serialize through nextest's `windowed` test-group.
       - name: cargo nextest run
         if: matrix.features == 'default'
-        run: xvfb-run -a cargo nextest run
+        run: xvfb-run -a dbus-run-session -- sh -c 'openbox & sleep 2; cargo nextest run'
       - name: cargo nextest run --all-features
         if: matrix.features == 'all-features'
-        run: xvfb-run -a cargo nextest run --all-features
+        run: xvfb-run -a dbus-run-session -- sh -c 'openbox & sleep 2; cargo nextest run --all-features'
 
   lint:
     name: Lint

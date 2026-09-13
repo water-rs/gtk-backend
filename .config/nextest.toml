@@ -1,0 +1,11 @@
+# Tests that present a toplevel window must hold the display's single X input
+# focus, which is global: two windowed tests running in parallel would steal
+# focus from each other. They run in a serial test-group while everything else
+# stays parallel.
+
+[test-groups.windowed]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'test(/renderer::focus_tests::/) | test(/applied_filter/)'
+test-group = 'windowed'
