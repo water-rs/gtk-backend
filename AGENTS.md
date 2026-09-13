@@ -24,8 +24,14 @@ GTK tests need a display. Headless runs go through `xvfb-run`; llvmpipe
 filter tests require — GTK4's GL pipeline refuses contexts below GL 3.3 and
 the filter pipeline's compute passes need 4.3/ES 3.1.
 
+Focus tests additionally need the window's toplevel to hold real input focus,
+which bare Xvfb never grants — a minimal window manager (openbox) must be
+running inside the session, and tests that present a toplevel belong to the
+`windowed` serial test-group in `.config/nextest.toml` so two of them cannot
+steal each other's focus.
+
 ```
-xvfb-run -a cargo nextest run
+xvfb-run -a dbus-run-session -- sh -c 'openbox & sleep 2; cargo nextest run'
 ```
 
 Do not stub out `gtk4::init` failures or skip tests when a display is missing

@@ -1566,3 +1566,254 @@ impl Default for GtkRenderer {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod focus_tests {
+    use std::time::{Duration, Instant};
+
+    use glib::MainContext;
+
+    use super::*;
+
+    fn init() {
+        gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
+    }
+
+    /// Pumps the default main context until `condition` holds, one iteration
+    /// at a time so GTK's map/focus event delivery gets to run.
+    fn wait_until(mut condition: impl FnMut() -> bool) {
+        let context = MainContext::default();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !condition() {
+            assert!(Instant::now() < deadline, "timed out waiting for GTK state");
+            context.iteration(true);
+        }
+    }
+
+    /// Whether `anchor` still carries a deferred focus request.
+    fn has_pending_focus_request(anchor: &impl ObjectExt) -> bool {
+        // SAFETY: `FOCUS_REQUEST_PENDING_DATA_KEY` only ever stores
+        // `PendingFocusRequest`, and the returned pointer is discarded after
+        // the presence check; widget data is only touched on this thread.
+        unsafe { anchor.data::<PendingFocusRequest>(FOCUS_REQUEST_PENDING_DATA_KEY) }.is_some()
+    }
+
+    /// A vertical box wrapping a marked `Entry`, mirroring the shape the real
+    /// `TextField` component emits (`container > label + marked entry`).
+    fn labelled_entry() -> (gtk4::Box, gtk4::Entry) {
+        let container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        container.append(&gtk4::Label::new(Some("Field")));
+        let entry = gtk4::Entry::new();
+        mark_focus_anchor(&entry);
+        container.append(&entry);
+        (container, entry)
+    }
+
+    /// Whether the window's surface reports the toplevel `FOCUSED` state.
+    /// `is-active` instead tracks the WM's `_NET_ACTIVE_WINDOW` hint and stays
+    /// false without a window manager, so the surface state is the condition
+    /// that matters under bare Xvfb.
+    fn toplevel_focused(window: &gtk4::Window) -> bool {
+        window
+            .surface()
+            .and_then(|surface| surface.downcast::<gdk4::Toplevel>().ok())
+            .is_some_and(|toplevel| toplevel.state().contains(gdk4::ToplevelState::FOCUSED))
+    }
+
+    /// Presents `window` with `child` and waits until the toplevel is mapped
+    /// and holds keyboard focus. Under bare Xvfb there is no window manager,
+    /// so GDK's autofocus grants input focus to the mapped toplevel itself.
+    fn present_active(window: &gtk4::Window, child: &Widget) {
+        window.set_child(Some(child));
+        window.present();
+        wait_until(|| window.is_mapped() && toplevel_focused(window));
+    }
+
+    /// Whether `anchor` or one of its descendants holds keyboard focus in
+    /// `window`, checked through the root's focus widget rather than
+    /// `has_focus` on the anchor: `gtk4::Entry` delegates focus to its
+    /// private `GtkText` and internal children are not reported by
+    /// `is_ancestor`, so `FOCUS_WITHIN` on the anchor is the observable
+    /// contract.
+    fn focus_inside(_window: &gtk4::Window, anchor: &gtk4::Entry) -> bool {
+        anchor_holds_focus(&anchor.clone().upcast::<Widget>())
+    }
+
+    #[test]
+    fn resolves_the_single_marked_anchor_in_a_subtree() {
+        init();
+        let (container, entry) = labelled_entry();
+        let resolved = resolve_single_focus_anchor(&container.upcast());
+        assert_eq!(resolved, entry.upcast::<Widget>());
+    }
+
+    #[test]
+    #[should_panic(expected = "requires exactly one TextField or SecureField")]
+    fn attach_without_a_focus_anchor_panics() {
+        init();
+        let binding = Binding::container(false);
+        let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        container.append(&gtk4::Label::new(Some("no anchor")));
+        let _ = attach_focus_metadata(container.upcast(), &binding);
+    }
+
+    #[test]
+    #[should_panic(expected = "found 2")]
+    fn attach_with_two_focus_anchors_panics() {
+        init();
+        let binding = Binding::container(false);
+        let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        let first = gtk4::Entry::new();
+        let second = gtk4::Entry::new();
+        mark_focus_anchor(&first);
+        mark_focus_anchor(&second);
+        container.append(&first);
+        container.append(&second);
+        let _ = attach_focus_metadata(container.upcast(), &binding);
+    }
+
+    #[test]
+    fn binding_writes_move_platform_focus() {
+        init();
+        let binding_a = Binding::container(false);
+        let binding_b = Binding::container(false);
+        let (container_a, entry_a) = labelled_entry();
+        let (container_b, entry_b) = labelled_entry();
+        let widget_a = attach_focus_metadata(container_a.upcast(), &binding_a);
+        let widget_b = attach_focus_metadata(container_b.upcast(), &binding_b);
+
+        let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        vbox.append(&widget_a);
+        vbox.append(&widget_b);
+        let window = gtk4::Window::new();
+        present_active(&window, &vbox.upcast());
+
+        // GTK focuses the first focusable child on map; the write-back turns
+        // binding A on without any explicit request.
+        wait_until(|| focus_inside(&window, &entry_a));
+        wait_until(|| binding_a.get());
+        assert!(!binding_b.get());
+
+        binding_b.set(true);
+        wait_until(|| focus_inside(&window, &entry_b));
+        wait_until(|| !focus_inside(&window, &entry_a));
+        // A losing focus writes false back through its own binding.
+        wait_until(|| !binding_a.get());
+
+        binding_b.set(false);
+        wait_until(|| !focus_inside(&window, &entry_b));
+    }
+
+    #[test]
+    fn platform_focus_updates_the_binding() {
+        init();
+        let binding = Binding::container(false);
+        let (container, entry) = labelled_entry();
+        let widget = attach_focus_metadata(container.upcast(), &binding);
+
+        let window = gtk4::Window::new();
+        present_active(&window, &widget);
+
+        // GTK auto-focuses the first focusable child on map; the anchor's
+        // state-flags observer must write that back to the binding.
+        wait_until(|| binding.get());
+        assert!(focus_inside(&window, &entry));
+
+        gtk4::prelude::RootExt::set_focus(&window, None::<&Widget>);
+        wait_until(|| !binding.get());
+
+        entry.grab_focus();
+        wait_until(|| binding.get());
+    }
+
+    #[test]
+    fn focus_request_on_an_unmapped_anchor_waits_for_map() {
+        init();
+        let binding = Binding::container(false);
+        let (container, entry) = labelled_entry();
+        let widget = attach_focus_metadata(container.upcast(), &binding);
+
+        let window = gtk4::Window::new();
+        window.set_child(Some(&widget));
+        assert!(!entry.is_mapped());
+
+        binding.set(true);
+        assert!(
+            has_pending_focus_request(&entry),
+            "an unmapped anchor must record a pending focus request"
+        );
+
+        window.present();
+        wait_until(|| focus_inside(&window, &entry));
+        assert!(
+            !has_pending_focus_request(&entry),
+            "the pending request must be consumed once the anchor is mapped"
+        );
+    }
+
+    #[test]
+    fn initially_focused_binding_defers_until_map() {
+        init();
+        let binding = Binding::container(true);
+        let (container, entry) = labelled_entry();
+        let widget = attach_focus_metadata(container.upcast(), &binding);
+
+        assert!(
+            has_pending_focus_request(&entry),
+            "an unmapped anchor must record the initial request as pending"
+        );
+
+        let window = gtk4::Window::new();
+        present_active(&window, &widget);
+        wait_until(|| focus_inside(&window, &entry));
+    }
+
+    #[test]
+    fn clearing_a_pending_request_skips_late_map_focus() {
+        init();
+        let binding = Binding::container(false);
+        let (container, entry) = labelled_entry();
+        let widget = attach_focus_metadata(container.upcast(), &binding);
+
+        let window = gtk4::Window::new();
+        window.set_child(Some(&widget));
+
+        binding.set(true);
+        binding.set(false);
+        assert!(
+            !has_pending_focus_request(&entry),
+            "clearing must drop the pending focus request"
+        );
+
+        window.present();
+        wait_until(|| entry.is_mapped());
+        // GTK still applies its own default focus to the first focusable
+        // child on map; the write-back reports it through the binding. The
+        // pending marker staying cleared is what proves our deferred path
+        // did not fire.
+        wait_until(|| binding.get());
+        assert!(focus_inside(&window, &entry));
+    }
+
+    #[test]
+    fn repeated_focus_requests_are_idempotent() {
+        init();
+        let binding = Binding::container(false);
+        let (container, entry) = labelled_entry();
+        let widget = attach_focus_metadata(container.upcast(), &binding);
+
+        let window = gtk4::Window::new();
+        present_active(&window, &widget);
+
+        // GTK auto-focuses the first focusable child on map.
+        wait_until(|| focus_inside(&window, &entry));
+        wait_until(|| binding.get());
+
+        // A redundant `set(true)` and a direct grab must not disturb the
+        // already-satisfied focus state.
+        binding.set(true);
+        assert!(entry.grab_focus());
+        wait_until(|| focus_inside(&window, &entry));
+        assert!(binding.get());
+    }
+}
