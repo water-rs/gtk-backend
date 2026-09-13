@@ -180,15 +180,27 @@ pub(crate) fn mark_focus_anchor(widget: &impl IsA<Widget>) {
     }
 }
 
+/// Whether `anchor` or one of its descendants holds keyboard focus.
+///
+/// Composite widgets delegate focus to an inner widget — `gtk4::Entry`
+/// forwards `grab_focus` to its private `GtkText`, so `has_focus` never turns
+/// true on the entry itself. `FOCUS_WITHIN` covers both the direct and the
+/// delegated case.
+fn anchor_holds_focus(anchor: &Widget) -> bool {
+    anchor
+        .state_flags()
+        .contains(gtk4::StateFlags::FOCUS_WITHIN)
+}
+
 fn attach_focus_metadata(widget: Widget, binding: &Binding<bool>) -> Widget {
     let anchor = resolve_single_focus_anchor(&widget);
 
-    anchor.connect_has_focus_notify({
+    anchor.connect_state_flags_changed({
         let binding = binding.clone();
-        move |anchor| {
-            let has_focus = anchor.has_focus();
-            if binding.get() != has_focus {
-                binding.set(has_focus);
+        move |anchor, _| {
+            let focused = anchor_holds_focus(anchor);
+            if binding.get() != focused {
+                binding.set(focused);
             }
         }
     });
@@ -240,7 +252,7 @@ fn collect_focus_anchors(widget: &Widget, anchors: &mut Vec<Widget>) {
 }
 
 fn request_focus(anchor: &Widget) {
-    if anchor.has_focus() {
+    if anchor_holds_focus(anchor) {
         return;
     }
 
@@ -304,7 +316,7 @@ fn clear_focus(anchor: &Widget) {
     // presence checks discard their pointers.
     let _ = unsafe { anchor.steal_data::<PendingFocusRequest>(FOCUS_REQUEST_PENDING_DATA_KEY) };
 
-    if !anchor.has_focus() {
+    if !anchor_holds_focus(anchor) {
         return;
     }
 
