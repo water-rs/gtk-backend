@@ -134,6 +134,12 @@ fn style_to_markup_attrs(style: &Style, env: &Environment) -> String {
         font_weight_to_pango_value(resolved_font.weight)
     );
 
+    // A named family verbatim; otherwise the design, as the fontconfig generic
+    // Pango resolves to the platform's own face. The proportional default is
+    // what Pango uses when no family is given at all.
+    //
+    // TODO(#4): `FontDesign::Monospaced` → `font_family="monospace"` once a
+    // `waterui-text` release carrying `ResolvedFont::design` is published.
     if let Some(family) = resolved_font.family
         && !family.is_empty()
     {
