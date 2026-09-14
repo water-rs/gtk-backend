@@ -1,0 +1,5 @@
+# Examples that structurally cannot run under the GTK e2e — one name per
+# line, followed by a comment with the reason. A failure the suite reports is
+# a signal; a line added here is a decision. Keep it empty unless an example
+# genuinely cannot work under xvfb (hardware it needs, an engine CI cannot
+# provision), and say why.

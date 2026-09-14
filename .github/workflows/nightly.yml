@@ -1,0 +1,133 @@
+name: Nightly E2E
+
+# The repository's heavyweight coverage contract: drive every WaterUI example
+# through the real backend once a day and compare a settled window capture
+# against a checked-in golden. The suite builds waterui@dev with this commit
+# injected at `backends/gtk`, so it proves the examples a user runs today still
+# work against the backend under test — the same role the apple-backend and
+# android-backend nightlies play, and the coverage the main repository's
+# retired nightly used to fake (water-rs/waterui#755).
+#
+# A red scheduled run opens a tracking issue from .github/E2E_FAILURE.md; the
+# per-shard artifacts carry every capture and launcher log. `golden_mode:
+# record` captures fresh baselines and uploads them as `e2e-candidates`
+# artifacts for review into e2e/goldens/.
+
+on:
+  schedule:
+    # Staggered after waterui's old nightly (03:17 UTC), android-backend
+    # (04:23), and apple-backend (05:23).
+    - cron: "47 6 * * *"
+  workflow_dispatch:
+    inputs:
+      golden_mode:
+        description: >-
+          enforce compares captures against e2e/goldens/; record uploads fresh
+          baselines as artifacts instead
+        type: choice
+        options:
+          - enforce
+          - record
+        default: enforce
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nightly-e2e
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  SHARD_TOTAL: 4
+  WATERUI_DIR: ${{ github.workspace }}/waterui
+  EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
+  SHOTS_DIR: ${{ github.workspace }}/e2e-shots
+  RECORD_DIR: ${{ github.workspace }}/e2e-candidates
+
+jobs:
+  e2e:
+    name: examples-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      # One red shard must not hide another's result.
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare a waterui checkout carrying this backend
+        run: ./.github/scripts/setup-e2e.sh
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
+            libgraphene-1.0-dev libegl1-mesa-dev libgles2-mesa-dev libepoxy-dev \
+            xvfb openbox dbus-x11 imagemagick xdotool x11-utils
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install the toolchain waterui pins
+        working-directory: waterui
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-e2e
+
+      - name: Install the water CLI from the checkout
+        working-directory: waterui
+        run: cargo install --path cli --locked --root "${{ github.workspace }}/cli-bin"
+
+      - name: Run the shard under Xvfb
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+          RECORD: ${{ inputs.golden_mode == 'record' && 1 || 0 }}
+        run: |
+          export PATH="${{ github.workspace }}/cli-bin/bin:$PATH"
+          xvfb-run -a -s "-screen 0 1280x1024x24" dbus-run-session -- \
+            sh -c 'openbox & sleep 2; exec ./.github/scripts/run-e2e-shard.sh'
+
+      - name: Upload captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-shots-${{ matrix.shard }}
+          path: e2e-shots/
+          retention-days: 14
+
+      - name: Upload launcher logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ matrix.shard }}
+          path: e2e-logs/
+          retention-days: 14
+
+      - name: Upload recorded baselines
+        if: inputs.golden_mode == 'record'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-candidates-${{ matrix.shard }}
+          path: e2e-candidates/
+          retention-days: 14
+
+  report:
+    name: Report failure
+    needs: e2e
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: JasonEtco/create-an-issue@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          filename: .github/E2E_FAILURE.md
+          update_existing: true
