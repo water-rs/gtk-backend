@@ -1,6 +1,12 @@
 name: Release
 
 on:
+  # Publishing runs on the `main` push — the deliberate dev -> main
+  # release merge, whose required checks already passed on the same
+  # tree. `release-pr` still waits for CI on `dev` via `workflow_run`,
+  # since the release-plz bump PRs target the dev branch.
+  push:
+    branches: [main]
   workflow_run:
     workflows: ["CI"]
     branches: [dev]
@@ -14,11 +20,11 @@ jobs:
   release:
     name: Release unpublished packages
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'dev'
+    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: dev
+          ref: main
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       # `cargo publish` verify-compiles the crate, and the crate links GTK4.
