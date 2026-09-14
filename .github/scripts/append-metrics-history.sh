@@ -19,9 +19,16 @@ else
     git -C "${hist}" checkout -q --orphan metrics
 fi
 
+shopt -s nullglob
+files=("${dir}"/metrics-*.jsonl)
+if ((${#files[@]} == 0)); then
+    echo "no metrics files; nothing to append"
+    exit 0
+fi
+
 mkdir -p "${hist}/history"
-cat "${dir}"/metrics-*.jsonl >"${hist}/history/${run_id}.jsonl"
-cat "${dir}"/metrics-*.jsonl >"${hist}/latest.jsonl"
+cat "${files[@]}" >"${hist}/history/${run_id}.jsonl"
+cat "${files[@]}" >"${hist}/latest.jsonl"
 
 git -C "${hist}" add history latest.jsonl
 git -C "${hist}" \
