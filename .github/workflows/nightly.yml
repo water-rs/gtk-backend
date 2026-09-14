@@ -12,6 +12,11 @@ name: Nightly E2E
 # per-shard artifacts carry every capture and launcher log. `golden_mode:
 # record` captures fresh baselines and uploads them as `e2e-candidates`
 # artifacts for review into e2e/goldens/.
+#
+# Each run also records per-example release metrics — packaged binary size,
+# settled RSS, and exec-to-first-window latency — into `e2e-metrics` artifacts,
+# a run-summary table, and (scheduled runs) the orphan `metrics` branch whose
+# history/ files outlive artifact retention.
 
 on:
   schedule:
@@ -46,6 +51,7 @@ env:
   EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
   SHOTS_DIR: ${{ github.workspace }}/e2e-shots
   RECORD_DIR: ${{ github.workspace }}/e2e-candidates
+  METRICS_DIR: ${{ github.workspace }}/e2e-metrics
 
 jobs:
   e2e:
@@ -122,6 +128,39 @@ jobs:
           name: e2e-candidates-${{ matrix.shard }}
           path: e2e-candidates/
           retention-days: 14
+
+      - name: Upload metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-metrics-${{ matrix.shard }}
+          path: e2e-metrics/
+          retention-days: 90
+
+  metrics:
+    name: Record metrics
+    needs: e2e
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      # Scheduled runs append JSONL history to the orphan `metrics` branch.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: e2e-metrics-*
+          path: metrics-in
+          merge-multiple: true
+      - name: Summarize into the run page
+        run: |
+          echo "## e2e metrics" >> "$GITHUB_STEP_SUMMARY"
+          ./.github/scripts/report-metrics.sh metrics-in >> "$GITHUB_STEP_SUMMARY"
+      - name: Append history to the metrics branch
+        if: github.event_name == 'schedule'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./.github/scripts/append-metrics-history.sh metrics-in
 
   report:
     name: Report failure

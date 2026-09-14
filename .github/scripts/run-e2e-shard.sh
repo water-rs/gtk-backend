@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Drives this shard's examples through `water run --platform linux --backend
-# gtk4`, captures a settled screenshot of each window, and diffs it against the
-# golden in e2e/goldens/.
+# Drives this shard's examples through `water package --platform linux
+# --backend gtk4 --release`, launches the staged binary directly, captures a
+# settled screenshot of each window, and diffs it against the golden in
+# e2e/goldens/. The release package keeps the binary a user would ship, so the
+# per-example metrics this run records — binary size, settled RSS, and
+# exec-to-first-window latency — describe the artifact, not a debug build.
 #
 # Must run inside an X session with a window manager — GTK4 toplevels only get
 # real focus when a WM is running. The workflow wraps this script in
@@ -13,9 +16,9 @@
 # a golden disables the pixel diff for that example (content check only);
 # `e2e/skip.txt` excludes examples that cannot run at all.
 #
-# Env: WATERUI_DIR, EXAMPLE_LOG_DIR, SHOTS_DIR, SHARD_INDEX, SHARD_TOTAL;
-# optional BASELINES_DIR (default e2e/goldens in this repo), RECORD=1 with
-# RECORD_DIR to capture fresh baselines instead of comparing.
+# Env: WATERUI_DIR, EXAMPLE_LOG_DIR, SHOTS_DIR, METRICS_DIR, SHARD_INDEX,
+# SHARD_TOTAL; optional BASELINES_DIR (default e2e/goldens in this repo),
+# RECORD=1 with RECORD_DIR to capture fresh baselines instead of comparing.
 set -uo pipefail
 
 repo_root="${GITHUB_WORKSPACE:-$(pwd)}"
@@ -23,6 +26,7 @@ waterui_dir="${WATERUI_DIR:?WATERUI_DIR must point at the waterui checkout}"
 scripts_dir="${repo_root}/.github/scripts"
 log_dir="${EXAMPLE_LOG_DIR:?}"
 shots_dir="${SHOTS_DIR:?}"
+metrics_dir="${METRICS_DIR:?}"
 baselines_dir="${BASELINES_DIR:-${repo_root}/e2e/goldens}"
 skip_file="${repo_root}/e2e/skip.txt"
 shard_index="${SHARD_INDEX:?}"
@@ -30,7 +34,7 @@ shard_total="${SHARD_TOTAL:?}"
 record="${RECORD:-0}"
 record_dir="${RECORD_DIR:-${repo_root}/e2e-candidates}"
 
-mkdir -p "${log_dir}" "${shots_dir}" "${record_dir}"
+mkdir -p "${log_dir}" "${shots_dir}" "${record_dir}" "${metrics_dir}"
 
 # One target dir serves every generated backend crate in the shard: they share
 # the same dependency graph, so the first example's build warms the rest.
@@ -70,6 +74,14 @@ normalized_rmse() {
     echo "${delta:-1}"
 }
 
+# Appends one JSON object per example to the shard's metrics file; missing
+# values stay null rather than reading as real zeros downstream.
+record_metric() {
+    printf '{"example":"%s","binary_bytes":%s,"rss_kib":%s,"peak_rss_kib":%s,"startup_ms":%s}\n' \
+        "$1" "${2:-null}" "${3:-null}" "${4:-null}" "${5:-null}" \
+        >>"${metrics_dir}/metrics-${shard_index}.jsonl"
+}
+
 run_example() {
     local name=$1
     local log="${log_dir}/${name}.log" shot="${shots_dir}/${name}.png"
@@ -78,9 +90,29 @@ run_example() {
     cd "${waterui_dir}/examples/${name}" || return 1
     : >"${log}"
 
-    local before launcher win
+    # Packaging produces the same binary a user would run; measuring it keeps
+    # size/RSS/startup honest instead of reporting debug-profile numbers.
+    if ! water package --platform linux --backend gtk4 --release >>"${log}" 2>&1; then
+        echo "FAIL ${name}: water package failed (see log)"
+        return 1
+    fi
+
+    local crate bin
+    crate=$(sed -n 's/^name = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
+    bin=$(find "${CARGO_TARGET_DIR}" . -type f -name "${crate}-gtk4" \
+        -path "*/release/*" 2>/dev/null | head -1)
+    if [[ -z ${bin} || ! -x ${bin} ]]; then
+        echo "FAIL ${name}: release binary ${crate}-gtk4 not found under ${CARGO_TARGET_DIR}"
+        return 1
+    fi
+
+    local binary_bytes
+    binary_bytes=$(stat -c%s "${bin}")
+
+    local before launcher win launch_ms window_ms
     before=$(toplevel_windows)
-    setsid water run --platform linux --backend gtk4 >"${log}" 2>&1 &
+    launch_ms=$(date +%s%3N)
+    setsid "${bin}" >>"${log}" 2>&1 &
     launcher=$!
 
     win=""
@@ -89,13 +121,17 @@ run_example() {
         win=$(new_toplevel "${before}")
         [[ -n ${win} ]] && break
         if ! kill -0 "${launcher}" 2>/dev/null; then
-            echo "FAIL ${name}: water run exited before a window appeared (see log)"
+            record_metric "${name}" "${binary_bytes}" "" "" ""
+            echo "FAIL ${name}: app exited before a window appeared (see log)"
             return 1
         fi
-        sleep 3
+        # Fine-grained poll: startup_ms is only as precise as this loop.
+        sleep 0.2
     done
+    window_ms=$(date +%s%3N)
     if [[ -z ${win} ]]; then
         stop_launcher "${launcher}"
+        record_metric "${name}" "${binary_bytes}" "" "" ""
         echo "FAIL ${name}: no window within ${WINDOW_APPEAR_DEADLINE}s"
         return 1
     fi
@@ -113,7 +149,17 @@ run_example() {
         cp "${shot}" "${prev}"
     done
     rm -f "${prev}"
+
+    # Read RSS at the settled frame, then stop the app; the numbers describe
+    # the idle-after-render state a user would actually hold open.
+    local rss_kib="" peak_rss_kib=""
+    if [[ -r /proc/${launcher}/status ]]; then
+        rss_kib=$(awk '/^VmRSS/{print $2}' "/proc/${launcher}/status")
+        peak_rss_kib=$(awk '/^VmHWM/{print $2}' "/proc/${launcher}/status")
+    fi
     stop_launcher "${launcher}"
+    record_metric "${name}" "${binary_bytes}" "${rss_kib}" "${peak_rss_kib}" \
+        "$((window_ms - launch_ms))"
     ((settled)) || echo "WARN ${name}: frame never settled; using the last capture"
 
     local stdev
