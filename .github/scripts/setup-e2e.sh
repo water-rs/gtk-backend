@@ -34,8 +34,13 @@ with open(path) as f:
 entry = 'waterui-gtk = { path = "backends/gtk" }\n'
 if entry not in lines:
     start = lines.index("[patch.crates-io]\n")
-    end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("["))
-    lines.insert(end - 1 if lines[end - 1] == "\n" else end, entry)
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].startswith("[")),
+        len(lines),
+    )
+    if lines[end - 1].strip():
+        lines.insert(end, "\n")
+    lines.insert(end, entry)
 with open(path, "w") as f:
     f.writelines(lines)
 EOF
