@@ -53,7 +53,10 @@ skipped() {
 }
 
 toplevel_windows() {
-    xdotool search --onlyvisible --screen 0 --name '.' 2>/dev/null | sort -n
+    # Match on the WM_CLASS res_name (the binary's prgname, always set by GTK)
+    # rather than the window title: examples that never assign a title leave
+    # WM_NAME empty and would be invisible to a --name filter.
+    xdotool search --onlyvisible --screen 0 --classname '.*' 2>/dev/null | sort -n
 }
 
 new_toplevel() {
