@@ -29,6 +29,11 @@ impl GtkComponent for Native<ResolvedGradient> {
         area.set_draw_func(move |_area, cr, width, height| {
             let width = f64::from(width);
             let height = f64::from(height);
+            // GTK invokes the draw func before allocation (and while hidden)
+            // with zero geometry; a zero-area surface has nothing to paint.
+            if width <= 0.0 || height <= 0.0 {
+                return;
+            }
 
             match resolved.gradient_type {
                 GradientType::Linear => {
