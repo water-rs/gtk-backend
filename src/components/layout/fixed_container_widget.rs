@@ -304,4 +304,26 @@ impl WuiFixedContainer {
 
         obj
     }
+
+    /// Replaces the container's children and reflows them under the stored
+    /// layout.
+    ///
+    /// `LazyContainer` realizations whose layout is not a virtualizable stack
+    /// materialize their whole membership here — those containers (the
+    /// snackbar overlay's absolute layer) carry a handful of children, so
+    /// rebuilding the set on every reconcile is the right granularity.
+    pub fn set_children(&self, children: Vec<(Widget, StretchAxis)>) {
+        let imp = self.imp();
+        for (child, _) in std::mem::take(&mut *imp.children.borrow_mut()) {
+            self.remove(&child);
+        }
+        for (child, _) in &children {
+            self.put(child, 0.0, 0.0);
+        }
+        *imp.children.borrow_mut() = children;
+        imp.last_rects.borrow_mut().clear();
+        imp.last_size.borrow_mut().take();
+        self.queue_resize();
+        self.relayout();
+    }
 }
