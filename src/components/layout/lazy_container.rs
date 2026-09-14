@@ -9,7 +9,7 @@ use gtk4::{Orientation, Widget};
 use nami::Signal;
 use waterui_core::layout::{Layout, StretchAxis};
 use waterui_core::views::{SharedAnyViews, Views};
-use waterui_core::{Environment, Native};
+use waterui_core::{AnyView, Environment, Native};
 use waterui_layout::container::LazyContainer;
 use waterui_layout::stack::{LazyStackAxis, lazy_stack_axis};
 
@@ -152,7 +152,11 @@ impl GtkComponent for Native<LazyContainer> {
 /// full-window layer. Membership changes rebuild the whole child set: these
 /// containers carry a handful of self-positioning children, so list
 /// virtualization would buy nothing.
-fn render_fixed(layout: Box<dyn Layout>, contents: SharedAnyViews, env: &Environment) -> Widget {
+fn render_fixed(
+    layout: Box<dyn Layout>,
+    contents: SharedAnyViews<AnyView>,
+    env: &Environment,
+) -> Widget {
     let container = WuiFixedContainer::new(layout, materialize_children(&contents, env));
     container.set_hexpand(true);
     container.set_vexpand(true);
@@ -174,7 +178,7 @@ fn render_fixed(layout: Box<dyn Layout>, contents: SharedAnyViews, env: &Environ
 }
 
 fn materialize_children(
-    contents: &SharedAnyViews,
+    contents: &SharedAnyViews<AnyView>,
     env: &Environment,
 ) -> Vec<(Widget, StretchAxis)> {
     (0..contents.len().get())
