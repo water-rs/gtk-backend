@@ -191,7 +191,13 @@ impl GtkApp {
         #[cfg(feature = "webview-system")]
         ensure_webview_controller(&mut env);
 
+        eprintln!("[probe] pre-run is_registered={}", self.app.is_registered());
         self.app.connect_activate(move |app| {
+            eprintln!(
+                "[probe] activate is_registered={} is_owner={}",
+                app.is_registered(),
+                glib::MainContext::default().is_owner()
+            );
             let inspector = init_main_thread_executors();
             let app = app.clone();
             let content = content.build();
@@ -207,7 +213,16 @@ impl GtkApp {
                     .await
                     .unwrap_or_else(|error| panic!("GTK GPU runtime creation failed: {error}"));
                 env.insert(runtime);
+                eprintln!(
+                    "[probe] pre-create_window is_registered={} is_owner={}",
+                    app.is_registered(),
+                    glib::MainContext::default().is_owner()
+                );
                 let window = create_window(&app, "", 800, 600);
+                eprintln!(
+                    "[probe] post-create_window registered={}",
+                    app.is_registered()
+                );
                 crate::theme::install(&mut env, window.upcast_ref());
                 install_inspect_gesture(&window, &env);
                 apply_window_background(&window, &background, &env);
@@ -229,12 +244,20 @@ impl GtkApp {
                 let widget = renderer.render_any(content, &env);
                 window.set_child(Some(&widget));
                 window.present();
+                eprintln!(
+                    "[probe] post-present registered={} windows={}",
+                    app.is_registered(),
+                    app.windows().len()
+                );
                 drop(hold);
+                eprintln!("[probe] post-drop registered={}", app.is_registered());
             })
             .detach();
         });
 
-        self.app.run().into()
+        let code = self.app.run();
+        eprintln!("[probe] run returned {code:?}");
+        code.into()
     }
 
     /// Returns a reference to the underlying GTK Application.

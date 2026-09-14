@@ -40,6 +40,7 @@ mkdir -p "${log_dir}" "${shots_dir}" "${record_dir}" "${metrics_dir}"
 # the same dependency graph, so the first example's build warms the rest.
 export CARGO_TARGET_DIR="${repo_root}/e2e-target"
 export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+export RUST_BACKTRACE=1
 
 WINDOW_APPEAR_DEADLINE=1500   # the shard's first build is cold
 SETTLE_DEADLINE=90            # frames stable before capture
