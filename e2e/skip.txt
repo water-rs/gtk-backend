@@ -3,3 +3,12 @@
 # a signal; a line added here is a decision. Keep it empty unless an example
 # genuinely cannot work under xvfb (hardware it needs, an engine CI cannot
 # provision), and say why.
+
+# The CLI stages browser runtimes from the browser-runtime-manifest.json asset
+# of the matching waterui-cli release, and no published CLI release ships that
+# manifest, so packaging these three always fails on a 404. CEF would
+# additionally abort on its setuid chrome-sandbox helper, which a CI job
+# cannot provision mid-run. Revisit once a CLI release carries the manifest.
+chromium
+webview-cef
+webview
