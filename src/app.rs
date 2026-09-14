@@ -29,8 +29,13 @@ impl LocalExecutor for GtkMainThreadExecutor {
     where
         Fut: Future + 'static,
     {
+        // Wakers fire on whatever thread completed the awaited work — GPU init
+        // lands on `async-io` driver threads — so the hop back to the main
+        // context must be the thread-safe `idle_add_once`; the `*_local`
+        // variant asserts the caller already owns the context and panics
+        // on foreign threads.
         let (runnable, task) = async_task::spawn_local(fut, |runnable: Runnable| {
-            glib::idle_add_local_once(move || {
+            glib::idle_add_once(move || {
                 runnable.run();
             });
         });
@@ -136,6 +141,10 @@ impl GtkApp {
             let view = view.clone();
             let mut env = env.clone();
             waterui::inspector::install(&mut env, inspector);
+            // `activate` returning with a zero use count shuts the run loop
+            // down before the deferred window work runs; hold the application
+            // until the window itself holds it via `add_window`.
+            let hold = app.hold();
             spawn_local(async move {
                 let runtime = waterui_graphics::GpuRuntime::new()
                     .await
@@ -148,6 +157,7 @@ impl GtkApp {
                 let widget = renderer.render(view, &env);
                 window.set_child(Some(&widget));
                 window.present();
+                drop(hold);
             })
             .detach();
         });
@@ -189,6 +199,9 @@ impl GtkApp {
             let background = background.clone();
             let mut env = env.clone();
             waterui::inspector::install(&mut env, inspector);
+            // See the `hold` rationale in `run`: the window takes over the
+            // application reference once it is presented.
+            let hold = app.hold();
             spawn_local(async move {
                 let runtime = waterui_graphics::GpuRuntime::new()
                     .await
@@ -216,6 +229,7 @@ impl GtkApp {
                 let widget = renderer.render_any(content, &env);
                 window.set_child(Some(&widget));
                 window.present();
+                drop(hold);
             })
             .detach();
         });
