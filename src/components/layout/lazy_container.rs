@@ -43,7 +43,7 @@ impl GtkComponent for Native<LazyContainer> {
         // virtualize (the snackbar overlay's `AbsoluteLayout` layer) materialize
         // into a `WuiFixedContainer` instead.
         let Some(axis) = lazy_stack_axis(layout.as_ref()) else {
-            return render_fixed(layout, contents, &env);
+            return render_fixed(layout, &contents, &env);
         };
         let (orientation, spacing, cross_alignment) = match &axis {
             LazyStackAxis::Vertical { spacing, alignment } => (
@@ -154,10 +154,10 @@ impl GtkComponent for Native<LazyContainer> {
 /// virtualization would buy nothing.
 fn render_fixed(
     layout: Box<dyn Layout>,
-    contents: SharedAnyViews<AnyView>,
+    contents: &SharedAnyViews<AnyView>,
     env: &Environment,
 ) -> Widget {
-    let container = WuiFixedContainer::new(layout, materialize_children(&contents, env));
+    let container = WuiFixedContainer::new(layout, materialize_children(contents, env));
     container.set_hexpand(true);
     container.set_vexpand(true);
     let contents_guard = contents.watch(.., {
