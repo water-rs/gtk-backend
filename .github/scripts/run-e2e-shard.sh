@@ -41,7 +41,9 @@ mkdir -p "${log_dir}" "${shots_dir}" "${record_dir}" "${metrics_dir}"
 export CARGO_TARGET_DIR="${repo_root}/e2e-target"
 export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
 
-WINDOW_APPEAR_DEADLINE=1500   # the shard's first build is cold
+# The window wait starts after `water package` finishes, so it only covers
+# process spawn to first mapped toplevel — a healthy app maps in seconds.
+WINDOW_APPEAR_DEADLINE=120
 SETTLE_DEADLINE=90            # frames stable before capture
 SETTLE_BUDGET=0.005           # normalized RMSE between consecutive frames
 DIFF_BUDGET=0.02              # normalized RMSE against the golden
@@ -62,8 +64,13 @@ new_toplevel() {
 
 stop_launcher() {
     kill -- "-$1" 2>/dev/null || true
+    # A wedged app must not stall the shard: give SIGTERM a moment, then KILL.
+    for _ in 1 2 3 4 5; do
+        kill -0 "$1" 2>/dev/null || break
+        sleep 1
+    done
+    kill -9 -- "-$1" 2>/dev/null || true
     wait "$1" 2>/dev/null || true
-    sleep 1
 }
 
 normalized_rmse() {
