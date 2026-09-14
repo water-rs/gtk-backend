@@ -92,9 +92,13 @@ jobs:
         with:
           shared-key: nightly-e2e
 
-      - name: Install the water CLI from the checkout
-        working-directory: waterui
-        run: cargo install --path cli --locked --root "${{ github.workspace }}/cli-bin"
+      - name: Install the water CLI
+        # The CLI lives in water-rs/cli since water-rs/waterui#899; install its
+        # dev branch so the e2e exercises the same generation logic the
+        # checkouts are written for.
+        run: |
+          git clone --depth 1 --branch dev https://github.com/water-rs/cli.git water-cli
+          cargo install --path water-cli --locked --root "${{ github.workspace }}/cli-bin"
 
       - name: Run the shard under Xvfb
         env:
