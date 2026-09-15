@@ -20,6 +20,11 @@ use waterui_core::layout::{Rect, StretchAxis};
 /// `children` carries the same `(widget, axis)` tuples the container measured
 /// with; the axis is measurement metadata and plays no role in allocation —
 /// the rect already encodes everything the engine decided.
+///
+/// # Panics
+///
+/// Panics if `rects` and `children` differ in length — the layout engine must
+/// return one rect per measured child.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
