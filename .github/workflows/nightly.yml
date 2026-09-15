@@ -17,6 +17,13 @@ name: Nightly E2E
 # settled RSS, and exec-to-first-window latency — into `e2e-metrics` artifacts,
 # a run-summary table, and (scheduled runs) the orphan `metrics` branch whose
 # history/ files outlive artifact retention.
+#
+# Shape (#49): `prepare` clones waterui once, builds the water CLI once and
+# hands it to the example jobs as an artifact, and packages one example so
+# the shared release target directory is warm; it is the single writer of
+# the `nightly-e2e` cache. Each example job then restores that cache and
+# builds only its own increment, instead of compiling the CLI and the whole
+# framework thirty-odd times a night.
 
 on:
   schedule:
@@ -53,53 +60,32 @@ env:
   METRICS_DIR: ${{ github.workspace }}/e2e-metrics
 
 jobs:
-  discover:
-    name: Discover examples
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.list.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-      # One job per example: runner capacity is plentiful, and full isolation
-      # means one crashing example can never take siblings down with it.
-      - name: Emit the runnable example matrix
-        id: list
-        run: |
-          git clone --depth 1 --branch dev https://github.com/water-rs/waterui.git waterui
-          comm -23 \
-            <(WATERUI_DIR="${{ github.workspace }}/waterui" ./.github/scripts/discover-examples.sh | sort) \
-            <(grep -E '^\s*[^#[:space:]]' e2e/skip.txt | awk '{print $1}' | sort) \
-            | tee /dev/stderr \
-            | jq -Rnc '{example: [inputs]}' > /tmp/matrix.json
-          echo "matrix=$(cat /tmp/matrix.json)" >> "$GITHUB_OUTPUT"
-
-  e2e:
-    name: example-${{ matrix.example }}
-    needs: discover
+  prepare:
+    name: Prepare
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    strategy:
-      # One red example must not hide another's result.
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Prepare a waterui checkout carrying this backend
         run: ./.github/scripts/setup-e2e.sh
 
-      - name: Install system dependencies
+      # One job per example: runner capacity is plentiful, and full isolation
+      # means one crashing example can never take siblings down with it.
+      - name: Emit the runnable example matrix
+        id: list
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev \
-            libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
-            libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
-            libpipewire-0.3-dev libudev-dev libegl-dev libegl1-mesa-dev \
-            libgles2-mesa-dev libepoxy-dev libgraphene-1.0-dev libwayland-dev \
-            libxkbcommon-dev mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri \
-            pkg-config \
-            xvfb openbox dbus-x11 imagemagick xdotool x11-utils
+          comm -23 \
+            <(./.github/scripts/discover-examples.sh | sort) \
+            <(grep -E '^\s*[^#[:space:]]' e2e/skip.txt | awk '{print $1}' | sort) \
+            | tee /dev/stderr \
+            | jq -Rnc '{example: [inputs]}' > /tmp/matrix.json
+          echo "matrix=$(cat /tmp/matrix.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Install system dependencies
+        run: ./.github/scripts/install-e2e-deps.sh
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -107,9 +93,14 @@ jobs:
         working-directory: waterui
         run: rustup toolchain install
 
+      # The single writer of the shared cache: the CLI's target directory and
+      # the release target every example job packages into.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: nightly-e2e
+          workspaces: |
+            water-cli -> target
+            waterui -> ../e2e-target
 
       - name: Install the water CLI
         # The CLI lives in water-rs/cli since water-rs/waterui#899; install its
@@ -118,6 +109,65 @@ jobs:
         run: |
           git clone --depth 1 --branch dev https://github.com/water-rs/cli.git water-cli
           cargo install --path water-cli --locked --root "${{ github.workspace }}/cli-bin"
+
+      - name: Upload the water CLI
+        uses: actions/upload-artifact@v4
+        with:
+          name: water-cli
+          path: cli-bin/bin/water
+          retention-days: 1
+          if-no-files-found: error
+
+      # Package one example so the cache carries the framework, the backend
+      # and their dependency graph in release profile; each example job then
+      # compiles only its own crate. The gallery reaches the most of the
+      # framework, so it is the one to warm with.
+      - name: Warm the shared release target
+        working-directory: waterui/examples/gallery
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/e2e-target
+        run: |
+          export PATH="${{ github.workspace }}/cli-bin/bin:$PATH"
+          water package --platform linux --backend gtk4 --release
+
+  e2e:
+    name: example-${{ matrix.example }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      # One red example must not hide another's result.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare a waterui checkout carrying this backend
+        run: ./.github/scripts/setup-e2e.sh
+
+      - name: Install system dependencies
+        run: ./.github/scripts/install-e2e-deps.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install the toolchain waterui pins
+        working-directory: waterui
+        run: rustup toolchain install
+
+      # Restore-only: `prepare` wrote this key after warming the release
+      # target, and thirty jobs saving it would race for the reservation.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-e2e
+          save-if: false
+          workspaces: |
+            waterui -> ../e2e-target
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: water-cli
+          path: cli-bin/bin
+      - run: chmod +x cli-bin/bin/water
 
       - name: Run the example under Xvfb
         env:
