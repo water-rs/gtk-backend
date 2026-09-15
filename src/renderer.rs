@@ -36,6 +36,7 @@ use waterui_core::Binding;
 use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::handler::BoxedAction;
+use waterui_core::layout::StretchAxis;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{AnyView, Environment, Native, View};
 use waterui_core::{IgnorableMetadata, Metadata, Retain, Str};
@@ -740,6 +741,15 @@ fn install_gesture_observer(
 #[derive(Debug)]
 pub struct GtkRenderer {
     dispatcher: ViewDispatcher<(), RenderContext, Widget>,
+    /// Stretch axis of the leaf view currently being resolved, as observed by
+    /// the first non-transparent handler on the dispatch chain. Containers
+    /// probe it through [`render_any_with_axis`](Self::render_any_with_axis):
+    /// `View::stretch_axis` on a composite view reports the default `None`
+    /// before `body()` expansion, so the axis must be read where dispatch
+    /// actually lands — inside the leaf handler — and transparent wrappers
+    /// (`Metadata<T>`, `IgnorableMetadata<T>`) must let their content's leaf
+    /// answer instead.
+    leaf_axis: Cell<Option<StretchAxis>>,
 }
 
 impl GtkRenderer {
@@ -751,7 +761,10 @@ impl GtkRenderer {
         // Register component handlers
         Self::register_components(&mut dispatcher);
 
-        Self { dispatcher }
+        Self {
+            dispatcher,
+            leaf_axis: Cell::new(None),
+        }
     }
 
     /// Renders a view to a GTK widget.
@@ -764,6 +777,23 @@ impl GtkRenderer {
     pub fn render_any(&mut self, view: AnyView, env: &Environment) -> Widget {
         let ctx = RenderContext::with_renderer(self);
         self.dispatcher.dispatch(view, env, ctx)
+    }
+
+    /// Renders `view` and reports the resolved leaf's [`StretchAxis`].
+    ///
+    /// The probe is saved and restored around the render so nested container
+    /// renders inside a handler do not disturb an in-flight outer probe.
+    /// `None` left by an entirely transparent-but-handlerless chain means the
+    /// default, content-sized [`StretchAxis::None`].
+    pub fn render_any_with_axis(
+        &mut self,
+        view: AnyView,
+        env: &Environment,
+    ) -> (Widget, StretchAxis) {
+        let prev = self.leaf_axis.replace(None);
+        let widget = self.render_any(view, env);
+        let axis = self.leaf_axis.replace(prev).unwrap_or(StretchAxis::None);
+        (widget, axis)
     }
 
     fn register_components(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
@@ -821,7 +851,7 @@ impl GtkRenderer {
 
     /// Registers a handler for `Str` that renders it as a GTK Label.
     fn register_str_handler(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
-        dispatcher.register::<Str>(|_state, _ctx, s, _env| {
+        Self::register_with_renderer::<Str>(dispatcher, |_renderer, s, _env| {
             let label = gtk4::Label::new(Some(s.as_str()));
             // Let text maintain natural width - layout system handles sizing
             label.upcast()
@@ -830,7 +860,7 @@ impl GtkRenderer {
 
     /// Registers a handler for unit type `()` as an empty widget.
     fn register_unit_handler(dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>) {
-        dispatcher.register::<Native<()>>(|_state, _ctx, _unit, _env| {
+        Self::register_with_renderer::<Native<()>>(dispatcher, |_renderer, _unit, _env| {
             // Return an empty widget (invisible box with no children)
             let empty = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
             empty.set_visible(false);
@@ -854,13 +884,13 @@ impl GtkRenderer {
         use waterui::style::Shadow;
 
         // Metadata<Environment> - use provided environment for subtree
-        Self::register_with_renderer::<Metadata<Environment>>(
+        Self::register_transparent::<Metadata<Environment>>(
             dispatcher,
             |renderer, metadata, _env| renderer.render_any(metadata.content, &metadata.value),
         );
 
         // Metadata<Retain> - keep retained value alive for the widget lifetime
-        Self::register_with_renderer::<Metadata<Retain>>(dispatcher, |renderer, metadata, env| {
+        Self::register_transparent::<Metadata<Retain>>(dispatcher, |renderer, metadata, env| {
             let widget = renderer.render_any(metadata.content, env);
             // SAFETY: `RETAIN_DATA_KEY` is written here only and never read
             // back; the value is stored purely so the widget's destruction
@@ -870,7 +900,7 @@ impl GtkRenderer {
         });
 
         // Metadata<LifeCycleHook> - invoke hook on appear/disappear
-        Self::register_with_renderer::<Metadata<LifeCycleHook>>(
+        Self::register_transparent::<Metadata<LifeCycleHook>>(
             dispatcher,
             |renderer, metadata, env| {
                 let widget = renderer.render_any(metadata.content, env);
@@ -900,7 +930,7 @@ impl GtkRenderer {
         );
 
         // Metadata<Opacity> - apply opacity via GTK widget opacity
-        Self::register_with_renderer::<Metadata<Opacity>>(dispatcher, |renderer, metadata, env| {
+        Self::register_transparent::<Metadata<Opacity>>(dispatcher, |renderer, metadata, env| {
             let widget = renderer.render_any(metadata.content, env);
             let alpha = metadata.value.value;
             let (initial, guard) = subscribe_then_get(&alpha, {
@@ -919,7 +949,7 @@ impl GtkRenderer {
         });
 
         // Metadata<Shadow> - apply CSS shadow to a wrapper
-        Self::register_with_renderer::<Metadata<Shadow>>(dispatcher, |renderer, metadata, env| {
+        Self::register_transparent::<Metadata<Shadow>>(dispatcher, |renderer, metadata, env| {
             let content = renderer.render_any(metadata.content, env);
             let wrapper = wrap_for_metadata(&content);
             let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_SHADOW);
@@ -953,13 +983,13 @@ impl GtkRenderer {
         });
 
         // Metadata<Focused> - bridge focus state with GTK focus
-        Self::register_with_renderer::<Metadata<Focused>>(dispatcher, |renderer, metadata, env| {
+        Self::register_transparent::<Metadata<Focused>>(dispatcher, |renderer, metadata, env| {
             let widget = renderer.render_any(metadata.content, env);
             attach_focus_metadata(widget, &metadata.value.0)
         });
 
         // Metadata<Cursor> - update pointer cursor while hovering
-        Self::register_with_renderer::<Metadata<Cursor>>(dispatcher, |renderer, metadata, env| {
+        Self::register_transparent::<Metadata<Cursor>>(dispatcher, |renderer, metadata, env| {
             let widget = renderer.render_any(metadata.content, env);
             widget.set_can_target(true);
             let style_signal = metadata.value.style;
@@ -1006,7 +1036,7 @@ impl GtkRenderer {
         });
 
         // Metadata<Border> - apply CSS border to a wrapper
-        Self::register_with_renderer::<Metadata<Border>>(dispatcher, |renderer, metadata, env| {
+        Self::register_transparent::<Metadata<Border>>(dispatcher, |renderer, metadata, env| {
             let content = renderer.render_any(metadata.content, env);
             let wrapper = wrap_for_metadata(&content);
             let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_BORDER);
@@ -1040,7 +1070,7 @@ impl GtkRenderer {
         });
 
         // Metadata<Scale> - visual scale transform wrapper
-        Self::register_with_renderer::<Metadata<Scale>>(dispatcher, |renderer, metadata, env| {
+        Self::register_transparent::<Metadata<Scale>>(dispatcher, |renderer, metadata, env| {
             let content = renderer.render_any(metadata.content, env);
             let wrapper = wrap_for_metadata(&content);
             let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_SCALE);
@@ -1083,31 +1113,28 @@ impl GtkRenderer {
         });
 
         // Metadata<Rotation> - visual rotation transform wrapper
-        Self::register_with_renderer::<Metadata<Rotation>>(
-            dispatcher,
-            |renderer, metadata, env| {
-                let content = renderer.render_any(metadata.content, env);
-                let wrapper = wrap_for_metadata(&content);
-                let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_ROTATION);
-                let rotation = metadata.value;
-                let (initial, guard) = subscribe_then_get(&rotation.angle, {
+        Self::register_transparent::<Metadata<Rotation>>(dispatcher, |renderer, metadata, env| {
+            let content = renderer.render_any(metadata.content, env);
+            let wrapper = wrap_for_metadata(&content);
+            let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_ROTATION);
+            let rotation = metadata.value;
+            let (initial, guard) = subscribe_then_get(&rotation.angle, {
+                let scoped_css = scoped_css.clone();
+                move |ctx| {
+                    let angle = ctx.into_value();
                     let scoped_css = scoped_css.clone();
-                    move |ctx| {
-                        let angle = ctx.into_value();
-                        let scoped_css = scoped_css.clone();
-                        glib::idle_add_local_once(move || {
-                            apply_rotation_css(&scoped_css, angle, rotation.anchor);
-                        });
-                    }
-                });
-                apply_rotation_css(&scoped_css, initial, rotation.anchor);
-                store_watcher_guard(&wrapper, Box::new(guard));
-                wrapper.upcast()
-            },
-        );
+                    glib::idle_add_local_once(move || {
+                        apply_rotation_css(&scoped_css, angle, rotation.anchor);
+                    });
+                }
+            });
+            apply_rotation_css(&scoped_css, initial, rotation.anchor);
+            store_watcher_guard(&wrapper, Box::new(guard));
+            wrapper.upcast()
+        });
 
         // Metadata<Offset> - visual translate transform wrapper
-        Self::register_with_renderer::<Metadata<Offset>>(dispatcher, |renderer, metadata, env| {
+        Self::register_transparent::<Metadata<Offset>>(dispatcher, |renderer, metadata, env| {
             let content = renderer.render_any(metadata.content, env);
             let wrapper = wrap_for_metadata(&content);
             let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_OFFSET);
@@ -1150,24 +1177,20 @@ impl GtkRenderer {
         });
 
         // Metadata<ClipShape> - clip content to a shape
-        Self::register_with_renderer::<Metadata<ClipShape>>(
-            dispatcher,
-            |renderer, metadata, env| {
-                let content = renderer.render_any(metadata.content, env);
-                // The clip resolves the shape's `ShapeKind` against the
-                // allocated size at snapshot time. CSS cannot: a percentage
-                // `border-radius` resolves per axis, so it turns every round
-                // corner on a non-square surface into an elliptical one (#157).
-                // The commands are only read for a custom path (#389).
-                WuiClipShape::new(metadata.value.kind(), metadata.value.commands(), &content)
-                    .upcast()
-            },
-        );
+        Self::register_transparent::<Metadata<ClipShape>>(dispatcher, |renderer, metadata, env| {
+            let content = renderer.render_any(metadata.content, env);
+            // The clip resolves the shape's `ShapeKind` against the
+            // allocated size at snapshot time. CSS cannot: a percentage
+            // `border-radius` resolves per axis, so it turns every round
+            // corner on a non-square surface into an elliptical one (#157).
+            // The commands are only read for a custom path (#389).
+            WuiClipShape::new(metadata.value.kind(), metadata.value.commands(), &content).upcast()
+        });
 
         // Metadata<Secure> - passthrough (GTK cannot enforce screenshot protection)
         Self::register_passthrough_metadata::<Secure>(dispatcher);
 
-        Self::register_with_renderer::<Metadata<StandardDynamicRange>>(
+        Self::register_transparent::<Metadata<StandardDynamicRange>>(
             dispatcher,
             |renderer, metadata, env| {
                 let content = renderer.render_any(metadata.content, env);
@@ -1176,7 +1199,7 @@ impl GtkRenderer {
                 wrapper.upcast()
             },
         );
-        Self::register_with_renderer::<Metadata<HighDynamicRange>>(
+        Self::register_transparent::<Metadata<HighDynamicRange>>(
             dispatcher,
             |renderer, metadata, env| {
                 let content = renderer.render_any(metadata.content, env);
@@ -1187,7 +1210,7 @@ impl GtkRenderer {
         );
 
         // Metadata<OnEvent> - handle hover events
-        Self::register_with_renderer::<Metadata<OnEvent>>(dispatcher, |renderer, metadata, env| {
+        Self::register_transparent::<Metadata<OnEvent>>(dispatcher, |renderer, metadata, env| {
             let widget = renderer.render_any(metadata.content, env);
             widget.set_can_target(true);
             let expected = metadata.value.event();
@@ -1232,7 +1255,7 @@ impl GtkRenderer {
         });
 
         // Metadata<GestureObserver> - attach gesture recognizers
-        Self::register_with_renderer::<Metadata<GestureObserver>>(
+        Self::register_transparent::<Metadata<GestureObserver>>(
             dispatcher,
             |renderer, metadata, env| {
                 let widget = renderer.render_any(metadata.content, env);
@@ -1244,7 +1267,7 @@ impl GtkRenderer {
         );
 
         // Metadata<ResolvedContextMenu> - right-click popover menu
-        Self::register_with_renderer::<Metadata<ResolvedContextMenu>>(
+        Self::register_transparent::<Metadata<ResolvedContextMenu>>(
             dispatcher,
             |renderer, metadata, env| {
                 let widget = renderer.render_any(metadata.content, env);
@@ -1281,25 +1304,22 @@ impl GtkRenderer {
         );
 
         // Metadata<Draggable> - native GTK drag source
-        Self::register_with_renderer::<Metadata<Draggable>>(
-            dispatcher,
-            |renderer, metadata, env| {
-                let widget = renderer.render_any(metadata.content, env);
-                widget.set_can_target(true);
-                let data = metadata.value.data;
-                let source = gtk4::DragSource::new();
-                source.set_actions(gdk4::DragAction::COPY);
-                source.connect_prepare(move |_, _, _| {
-                    let payload = data.get();
-                    Some(drag_content_provider(&payload))
-                });
-                widget.add_controller(source);
-                widget
-            },
-        );
+        Self::register_transparent::<Metadata<Draggable>>(dispatcher, |renderer, metadata, env| {
+            let widget = renderer.render_any(metadata.content, env);
+            widget.set_can_target(true);
+            let data = metadata.value.data;
+            let source = gtk4::DragSource::new();
+            source.set_actions(gdk4::DragAction::COPY);
+            source.connect_prepare(move |_, _, _| {
+                let payload = data.get();
+                Some(drag_content_provider(&payload))
+            });
+            widget.add_controller(source);
+            widget
+        });
 
         // Metadata<DropDestination> - native GTK drop target
-        Self::register_with_renderer::<Metadata<DropDestination>>(
+        Self::register_transparent::<Metadata<DropDestination>>(
             dispatcher,
             |renderer, metadata, env| {
                 let widget = renderer.render_any(metadata.content, env);
@@ -1363,28 +1383,25 @@ impl GtkRenderer {
         );
 
         // Metadata<Hittable> - control hit testing and interaction
-        Self::register_with_renderer::<Metadata<Hittable>>(
-            dispatcher,
-            |renderer, metadata, env| {
-                let widget = renderer.render_any(metadata.content, env);
-                let enabled = metadata.value.enabled;
-                let (initial, guard) = subscribe_then_get(&enabled, {
+        Self::register_transparent::<Metadata<Hittable>>(dispatcher, |renderer, metadata, env| {
+            let widget = renderer.render_any(metadata.content, env);
+            let enabled = metadata.value.enabled;
+            let (initial, guard) = subscribe_then_get(&enabled, {
+                let widget = widget.clone();
+                move |ctx| {
+                    let enabled = ctx.into_value();
                     let widget = widget.clone();
-                    move |ctx| {
-                        let enabled = ctx.into_value();
-                        let widget = widget.clone();
-                        glib::idle_add_local_once(move || {
-                            widget.set_can_target(enabled);
-                            widget.set_sensitive(enabled);
-                        });
-                    }
-                });
-                widget.set_can_target(initial);
-                widget.set_sensitive(initial);
-                store_watcher_guard(&widget, Box::new(guard));
-                widget
-            },
-        );
+                    glib::idle_add_local_once(move || {
+                        widget.set_can_target(enabled);
+                        widget.set_sensitive(enabled);
+                    });
+                }
+            });
+            widget.set_can_target(initial);
+            widget.set_sensitive(initial);
+            store_watcher_guard(&widget, Box::new(guard));
+            widget
+        });
 
         // Metadata<IgnoreSafeArea> - passthrough on GTK windowing model
         Self::register_passthrough_metadata::<IgnoreSafeArea>(dispatcher);
@@ -1398,7 +1415,7 @@ impl GtkRenderer {
         // Metadata<AppliedFilter> - capture the child through the snapshot
         // pipeline, run the filtrate pipeline on wgpu, and present the
         // filtered GL texture through GTK's share-group compositor.
-        Self::register_with_renderer::<Metadata<AppliedFilter>>(
+        Self::register_transparent::<Metadata<AppliedFilter>>(
             dispatcher,
             |renderer, metadata, env| {
                 let content = renderer.render_any(metadata.content, env);
@@ -1412,7 +1429,7 @@ impl GtkRenderer {
         // Ignorable metadata with no native semantic realization.
         Self::register_ignorable_metadata::<MaterialBackground>(dispatcher);
 
-        Self::register_with_renderer::<IgnorableMetadata<AccessibilityLabel>>(
+        Self::register_transparent::<IgnorableMetadata<AccessibilityLabel>>(
             dispatcher,
             |renderer, metadata, env| {
                 let widget = renderer.render_any(metadata.content, env);
@@ -1429,7 +1446,7 @@ impl GtkRenderer {
                 widget
             },
         );
-        Self::register_with_renderer::<IgnorableMetadata<AccessibilityValue>>(
+        Self::register_transparent::<IgnorableMetadata<AccessibilityValue>>(
             dispatcher,
             |renderer, metadata, env| {
                 let widget = renderer.render_any(metadata.content, env);
@@ -1448,7 +1465,7 @@ impl GtkRenderer {
                 widget
             },
         );
-        Self::register_with_renderer::<IgnorableMetadata<AccessibilityRole>>(
+        Self::register_transparent::<IgnorableMetadata<AccessibilityRole>>(
             dispatcher,
             |renderer, metadata, env| {
                 let widget = renderer.render_any(metadata.content, env);
@@ -1456,7 +1473,7 @@ impl GtkRenderer {
                 widget
             },
         );
-        Self::register_with_renderer::<IgnorableMetadata<AccessibilityHidden>>(
+        Self::register_transparent::<IgnorableMetadata<AccessibilityHidden>>(
             dispatcher,
             |renderer, metadata, env| {
                 let widget = renderer.render_any(metadata.content, env);
@@ -1464,7 +1481,7 @@ impl GtkRenderer {
                 widget
             },
         );
-        Self::register_with_renderer::<IgnorableMetadata<AccessibilityChildren>>(
+        Self::register_transparent::<IgnorableMetadata<AccessibilityChildren>>(
             dispatcher,
             |renderer, metadata, env| {
                 let child = renderer.render_any(metadata.content, env);
@@ -1480,7 +1497,7 @@ impl GtkRenderer {
                 child
             },
         );
-        Self::register_with_renderer::<IgnorableMetadata<AccessibilityState>>(
+        Self::register_transparent::<IgnorableMetadata<AccessibilityState>>(
             dispatcher,
             |renderer, metadata, env| {
                 let widget = renderer.render_any(metadata.content, env);
@@ -1488,7 +1505,7 @@ impl GtkRenderer {
                 widget
             },
         );
-        Self::register_with_renderer::<IgnorableMetadata<AccessibilityStateSignal>>(
+        Self::register_transparent::<IgnorableMetadata<AccessibilityStateSignal>>(
             dispatcher,
             |renderer, metadata, env| {
                 let widget = renderer.render_any(metadata.content, env);
@@ -1512,7 +1529,7 @@ impl GtkRenderer {
     ) where
         Metadata<T>: View,
     {
-        Self::register_with_renderer::<Metadata<T>>(dispatcher, |renderer, metadata, env| {
+        Self::register_transparent::<Metadata<T>>(dispatcher, |renderer, metadata, env| {
             renderer.render_any(metadata.content, env)
         });
     }
@@ -1520,8 +1537,34 @@ impl GtkRenderer {
     /// Registers a handler that receives the dispatching [`GtkRenderer`]
     /// directly, so handlers can recurse without touching the raw context
     /// pointer themselves.
+    ///
+    /// `V` counts as a leaf for stretch-axis probing: when
+    /// [`render_any_with_axis`](Self::render_any_with_axis) is in flight, the
+    /// first leaf handler on the resolution chain records `V::stretch_axis`.
     fn register_with_renderer<V: View>(
         dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>,
+        handler: impl 'static + Clone + Fn(&mut Self, V, &Environment) -> Widget,
+    ) {
+        Self::register_dispatch(dispatcher, false, handler);
+    }
+
+    /// Registers a handler for a view that is transparent to layout:
+    /// `Metadata<T>` and `IgnorableMetadata<T>` wrappers decorate or observe
+    /// their content but never change its size, so the stretch-axis probe
+    /// keeps searching for the content's leaf instead of recording the
+    /// wrapper's axis.
+    fn register_transparent<V: View>(
+        dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>,
+        handler: impl 'static + Clone + Fn(&mut Self, V, &Environment) -> Widget,
+    ) {
+        Self::register_dispatch(dispatcher, true, handler);
+    }
+
+    /// Shared registration for [`register_with_renderer`] (leaf) and
+    /// [`register_transparent`] (layout-transparent wrapper).
+    fn register_dispatch<V: View>(
+        dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>,
+        transparent: bool,
         handler: impl 'static + Clone + Fn(&mut Self, V, &Environment) -> Widget,
     ) {
         dispatcher.register::<V>(move |_state, ctx, view, env| {
@@ -1532,6 +1575,9 @@ impl GtkRenderer {
             // thread, so the pointer is valid for the whole handler invocation
             // and this is the only renderer reference used during it.
             let renderer = unsafe { ctx.renderer() };
+            if !transparent && renderer.leaf_axis.get().is_none() {
+                renderer.leaf_axis.set(Some(view.stretch_axis()));
+            }
             handler(renderer, view, env)
         });
     }
@@ -1540,7 +1586,7 @@ impl GtkRenderer {
     fn register_ignorable_metadata<T: MetadataKey>(
         dispatcher: &mut ViewDispatcher<(), RenderContext, Widget>,
     ) {
-        Self::register_with_renderer::<IgnorableMetadata<T>>(
+        Self::register_transparent::<IgnorableMetadata<T>>(
             dispatcher,
             |renderer, metadata, env| renderer.render_any(metadata.content, env),
         );

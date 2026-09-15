@@ -9,29 +9,7 @@ use nami::{
     Signal,
     watcher::{BoxWatcherGuard, Context},
 };
-use waterui::accessibility::{
-    AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
-    AccessibilityState, AccessibilityStateSignal,
-};
-use waterui::background::{Background, MaterialBackground};
-use waterui::border::Border;
-use waterui::component::focus::Focused;
-use waterui::cursor::Cursor;
-use waterui::drag_drop::{Draggable, DropDestination};
-use waterui::filter::Opacity;
-use waterui::gesture::GestureObserver;
-use waterui::interaction::Hittable;
-use waterui::metadata::context_menu::ResolvedContextMenu;
-use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
-use waterui::navigation::{NavigationTransitionDestination, NavigationTransitionSource};
-use waterui::style::{Offset, Rotation, Scale, Shadow};
-use waterui_core::event::{LifeCycleHook, OnEvent};
-use waterui_core::layout::StretchAxis;
-use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, Retain};
-use waterui_graphics::AppliedFilter;
 use waterui_graphics::color::ResolvedColor;
-use waterui_layout::safe_area::IgnoreSafeArea;
-use waterui_shape::ClipShape;
 
 /// Installs a signal subscription before taking its initial snapshot.
 pub fn subscribe_then_get<S>(
@@ -204,75 +182,4 @@ pub fn resolved_color_to_hex(color: ResolvedColor) -> String {
 pub fn resolved_color_to_css_rgba(color: ResolvedColor) -> String {
     let (red, green, blue, alpha) = resolved_color_to_rgba8(color);
     format!("rgba({red}, {green}, {blue}, {alpha})")
-}
-
-fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
-    macro_rules! passthrough_metadata_content {
-        ($($ty:ty),+ $(,)?) => {
-            $(
-                if let Some(metadata) = view.downcast_ref::<Metadata<$ty>>() {
-                    return Some(&metadata.content);
-                }
-            )+
-        };
-    }
-
-    macro_rules! passthrough_ignorable_metadata_content {
-        ($($ty:ty),+ $(,)?) => {
-            $(
-                if let Some(metadata) = view.downcast_ref::<IgnorableMetadata<$ty>>() {
-                    return Some(&metadata.content);
-                }
-            )+
-        };
-    }
-
-    passthrough_metadata_content!(
-        Environment,
-        Retain,
-        Opacity,
-        AppliedFilter,
-        Scale,
-        Rotation,
-        Offset,
-        ClipShape,
-        Border,
-        Shadow,
-        Focused,
-        Hittable,
-        GestureObserver,
-        LifeCycleHook,
-        OnEvent,
-        Secure,
-        StandardDynamicRange,
-        HighDynamicRange,
-        Cursor,
-        IgnoreSafeArea,
-        ResolvedContextMenu,
-        Draggable,
-        DropDestination,
-        Background,
-        NavigationTransitionSource,
-        NavigationTransitionDestination
-    );
-    passthrough_ignorable_metadata_content!(
-        MaterialBackground,
-        AccessibilityLabel,
-        AccessibilityRole,
-        AccessibilityHidden,
-        AccessibilityChildren,
-        AccessibilityState,
-        AccessibilityStateSignal
-    );
-
-    None
-}
-
-/// Returns the stretch axis for layout, recursively unwrapping metadata wrappers.
-#[must_use]
-pub fn effective_stretch_axis(view: &AnyView) -> StretchAxis {
-    if let Some(content) = passthrough_content(view) {
-        return effective_stretch_axis(content);
-    }
-    view.stretch_axis()
 }
