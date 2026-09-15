@@ -1,0 +1,198 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.2.0](https://github.com/water-rs/gtk-backend/compare/v0.1.2...v0.2.0) - 2026-09-15
+
+### Added
+
+- *(app)* install a tracing subscriber so backend diagnostics reach stderr ([#46](https://github.com/water-rs/gtk-backend/pull/46))
+- *(badge)* render Badge as a GtkOverlay count indicator ([#45](https://github.com/water-rs/gtk-backend/pull/45))
+- port the post-split upstream delta ([#5](https://github.com/water-rs/gtk-backend/pull/5))
+- *(graphics)* render AppliedFilter through snapshot capture and GL presentation ([#3](https://github.com/water-rs/gtk-backend/pull/3))
+- *(text)* share one font collection through the environment
+- *(gpu-surface)* [**breaking**] give GpuFrame a first-class device scale
+- *(navigation)* carry the destination's transition to native backends
+- *(controls)* [**breaking**] require a label when constructing Toggle, TextField and Picker
+- *(theme)* [**breaking**] add the SelectionContainer / SelectionForeground tokens
+- *(text)* [**breaking**] line_limit — SwiftUI's lineLimit on every backend
+- *(webview)* [**breaking**] one keyed-injection, awaited-evaluation bridge contract on every backend
+- *(navigation)* [**breaking**] make the navigation example a tour of native chrome
+- *(window)* show a window under the application's own name
+- *(cli)* launcher icons for self-drawn desktop targets
+- *(inspector)* reach the inspector from every backend
+- *(filtrate)* give hosts a shared per-device shader module cache
+- *(inspector)* make the inspector a real WaterUI app
+- *(webview)* [**breaking**] gate the bridge on document origin, closed by default
+- *(webview)* [**breaking**] handlers take extractors and may be async
+- *(webview)* typed JavaScript evaluation with out-of-band interpolation
+- *(gtk)* move the WebKitGTK bridge onto the shared implementation
+- *(webview)* [**breaking**] make event watchers removable and share one registry
+- *(url)* [**breaking**] make runtime URL parsing total and add IntoUrl
+- [**breaking**] close the issue #134-#148 audit sweep
+- refactor navigation system
+- complete navigation parity across backends
+- *(video)* continue player parity work
+- *(particle)* add gpu collision physics
+- align focus state across backends
+- *(graphics)* finalize advanced filter pipeline and core integration
+- *(hydrolysis)* wire reactive rebuild loop through ViewBuilder roots
+- complete phase 0b and phase 1+2r foundation
+- extract opacity from GPU filter pipeline + zero-alloc ViewDispatcher
+- continue deep review fixes and ffi fast-fail cleanup
+- integrate assets, media, and runtime updates
+- *(color)* enhance color handling with HDR support and new FFI functions
+- *(color)* enhance color handling with headroom support in conversions
+- enhance navigation controller with FFI support and renderer integration
+- add GTK4 List, Picker, Photo, and SecureField components; update Cargo.toml dependencies
+- enhance GPU support in GTK4 backend with wgpu-hal and glow dependencies
+- add GTK4 Color and LazyContainer components, and update dependencies for GPU support
+- update GTK components to improve layout handling and add padding support
+- add GTK backend support to WaterUI CLI
+- add GPU surface support with wgpu integration for GTK4 backend
+- Implement GTK4 components for WaterUI
+- enhance GTK components and layout integration for WaterUI
+- add GTK4 backend for WaterUI with core infrastructure and initial components
+
+### Fixed
+
+- *(e2e)* never count a blank capture as settled ([#66](https://github.com/water-rs/gtk-backend/pull/66))
+- *(layout)* honest min sizes and correct cross-axis measure for text ([#64](https://github.com/water-rs/gtk-backend/pull/64))
+- *(layout)* probe the resolved leaf's stretch axis at dispatch time ([#62](https://github.com/water-rs/gtk-backend/pull/62))
+- *(layout)* allocate FixedContainer children directly instead of via size requests ([#61](https://github.com/water-rs/gtk-backend/pull/61))
+- *(graphics)* skip zero-geometry gradient draws ([#33](https://github.com/water-rs/gtk-backend/pull/33))
+- *(app)* hold app across deferred window creation; send-safe executor hop ([#26](https://github.com/water-rs/gtk-backend/pull/26))
+- *(layout)* materialize non-stack LazyContainer; drop invalid row-spacing ([#24](https://github.com/water-rs/gtk-backend/pull/24))
+- *(theme)* install font slots from gtk-font-name ([#21](https://github.com/water-rs/gtk-backend/pull/21))
+- *(renderer)* observe delegated focus on composite focus anchors
+- *(gtk)* clip shapes from their ShapeKind, not from path commands
+- *(waterui-gtk)* make the WebKit-absent stubs diverge without dead bindings
+- clear the C1 CI fallout on Linux and in the hygiene gate
+- *(picker)* name the control after its own label on GTK and Apple
+- *(gtk)* round a shape's corners by its shorter side
+- *(gtk)* satisfy clippy on the per-destination transition
+- *(gtk)* repair the bounded destination cache
+- *(ci)* restore rustfmt cleanliness and stop the phantom PiP error on Linux
+- *(navigation)* [**breaking**] make an unresolved bar color unrepresentable
+- *(navigation)* localize the back affordance and measure the retained search field
+- *(navigation)* let destination links and route links share one stack
+- *(gtk)* compile again after the GpuContext and gtk4 API changes
+- *(runtime)* start every application, and let "inspect element" reach an inspector
+- *(gtk)* keep the inspector endpoint alive for the application's lifetime
+- honor HDR semantics across backends
+- *(layout)* resolve the lazy stack axis once, and stop Frame filling on a minimum
+- *(gtk)* document every unsafe block and clear the Linux-only clippy debt
+- *(gtk)* give GpuSurface a sound GL contract instead of a lucky one
+- *(webview)* [**breaking**] give the page the value its handler returned
+- *(webview)* remove crash paths reachable from web content and fix engine cfgs
+- fix repository rule violations and refresh documentation
+
+### Other
+
+- *(nightly)* build the CLI once and share the release target across examples ([#53](https://github.com/water-rs/gtk-backend/pull/53))
+- gate pull requests into main on a green nightly at the head commit
+- *(e2e)* keep post-capture crashes loud and always upload launcher logs ([#48](https://github.com/water-rs/gtk-backend/pull/48))
+- *(e2e)* launch examples with RUST_BACKTRACE=1 ([#47](https://github.com/water-rs/gtk-backend/pull/47))
+- *(e2e)* emit the example matrix as compact JSON ([#42](https://github.com/water-rs/gtk-backend/pull/42))
+- *(e2e)* run one job per example instead of fixed shards ([#41](https://github.com/water-rs/gtk-backend/pull/41))
+- *(e2e)* bound every helper call so a crashed example cannot wedge a shard ([#37](https://github.com/water-rs/gtk-backend/pull/37))
+- *(e2e)* install water CLI from water-rs/cli; tolerate empty metrics ([#35](https://github.com/water-rs/gtk-backend/pull/35))
+- *(e2e)* cap window wait at 120s and escalate SIGTERM to SIGKILL ([#34](https://github.com/water-rs/gtk-backend/pull/34))
+- *(e2e)* detect windows by WM_CLASS res_name, not title ([#32](https://github.com/water-rs/gtk-backend/pull/32))
+- *(e2e)* build the injected backend, not the pinned revision ([#31](https://github.com/water-rs/gtk-backend/pull/31))
+- *(nightly)* add metrics report/history scripts missed by #28 ([#30](https://github.com/water-rs/gtk-backend/pull/30))
+- *(nightly)* record release size, RSS, and startup latency per example ([#27](https://github.com/water-rs/gtk-backend/pull/27)) ([#28](https://github.com/water-rs/gtk-backend/pull/28))
+- *(e2e)* skip browser-engine examples the suite cannot provision ([#22](https://github.com/water-rs/gtk-backend/pull/22))
+- per-leg cache keys, incremental/debuginfo off, cached apt deps ([#19](https://github.com/water-rs/gtk-backend/pull/19))
+- *(nightly)* install the full linux dependency set for example builds ([#17](https://github.com/water-rs/gtk-backend/pull/17))
+- *(nightly)* install libudev-dev for the water CLI build ([#16](https://github.com/water-rs/gtk-backend/pull/16))
+- fix setup-e2e patch insertion when [patch.crates-io] ends the manifest ([#15](https://github.com/water-rs/gtk-backend/pull/15))
+- nightly e2e driving every waterui example under GTK ([#14](https://github.com/water-rs/gtk-backend/pull/14))
+- publish only from the main push ([#12](https://github.com/water-rs/gtk-backend/pull/12))
+- *(renderer)* cover focus anchor resolution and binding sync
+- skip registry-baseline semver check while deps are git-pinned
+- pin waterui deps to the dev revision and port remaining deltas
+- add release-plz release pipeline ([#6](https://github.com/water-rs/gtk-backend/pull/6))
+- standalone manifest, CI, and webkitgtk lint fixes ([#1](https://github.com/water-rs/gtk-backend/pull/1))
+- Merge pull request #388 from water-rs/agent/gtk-shape-kind-clip-157
+- *(deps)* turn off default features nothing in the workspace uses
+- *(deps)* delete dependencies nothing imports
+- [**breaking**] select the WebView engine in the application, not the backend
+- [**breaking**] own WPE input adaptation in waterui-browser-wpe
+- [**breaking**] own CEF input adaptation in waterui-browser-cef
+- consolidate GPU glue into waterui-graphics helpers
+- ship the licence texts in every published crate
+- *(gtk)* drop a redundant clone on the picker label
+- *(gtk)* terminate the ellipse arm's statement
+- *(gtk)* bound the split destination cache
+- Clear the CI failures left on dev
+- Format the workspace
+- Complete accessibility infrastructure across backends
+- Fix color management across backends
+- *(layout)* memoize child measurement within one layout pass
+- *(layout)* [**breaking**] remove parallel child measurement
+- *(webview)* [**breaking**] stop leaking internal variants through WebViewEvent
+- Fix type errors from the by-reference conversion
+- Fix lint regressions from the GTK cleanup
+- Clear remaining clippy findings in the GTK backend
+- Clear mechanical clippy findings in the GTK backend
+- Fix Linux-only lint failures across ffi, gtk, cli and preview
+- Fix waterui-gtk compile errors and warnings
+- Unify glow on the version wgpu-hal links against
+- Fix workspace CI failures
+- Integrate CEF across WaterUI backends
+- Add bundled WebView and Chromium runtimes
+- Implement lazy list scrolling and indexed jumps
+- Make reactivity precise across renderers
+- upgrade workspace dependencies
+- Add cross-platform shader AOT with Shaderloom
+- deliver modular cross-platform video player
+- refactor native backends and GPU surface integration
+- Lean dependency graph for embedded: gpu/widgets/gestures features
+- Fix GTK label rendering and WaterKit Windows Bluetooth
+- reorganize the project
+- Fix cargo doc warnings
+- Move the GpuFilter runtime contract into filtrate as `Effect`
+- Mark GTK pkg-config build dependency
+- Fix GTK WebKit link probing
+- Fix CI coverage and preview dylib targets
+- Fix GTK resolved native views and Windows dylib linking
+- Clean dev CI and example builds
+- snapshot in-progress canonical changes
+- Implement testing roadmap coverage and CI reporting
+- Refactor split navigation around stable selection ids
+- Checkpoint current WaterUI changes
+- Reduce clippy noise across support crates
+- Implement review fixes and native multi-date picker
+- Refactor asset and icon build helpers
+- Fix local state rebuild semantics
+- Fix async filter setup handling
+- Add semantic chart interaction testing
+- Improve GTK backend completeness and filter support
+- bridge view dimensions across backends
+- checkpoint all in-progress workspace changes
+- checkpoint all in-progress workspace changes
+- commit pending workspace changes on dev
+- *(raw-view)* migrate resolved color to native backends
+- *(gtk)* align gpu surface redraw contract with request_redraw
+- enforce fast-fail rules and remove legacy fallback paths
+- commit full review and inspector/runtime updates
+- Auto-install Meson on macOS when cargo build fails
+- Remove on_demand and add needs_redraw
+- Fix GTK main thread executor and video renderer
+- Enhance video, chart, and locale platform support
+- Move static assets to R2 CDN and add PID-based window capture
+- Refactor code for improved readability and consistency
+- Linux-only GPU surface + WaterUI layout
+- anyviews watch FFI + preview/gtk/window improvements
+- Update android backend
+- fix axis overlap and enable AA on HDR
+- Update backend submodules
+- Fix the import of waterui-graphics
+- Refactor color module to use waterui_graphics
+- Remove Hydrolysis backend components and related infrastructure
