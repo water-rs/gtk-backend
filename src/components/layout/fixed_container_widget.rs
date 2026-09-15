@@ -1,19 +1,22 @@
 //! A GTK widget implementing `WaterUI`'s `FixedContainer` layout contract.
 //!
-//! This is a `gtk4::Fixed` subclass that delegates measurement and placement
-//! to `WaterUI`'s Rust `Layout` engine, mirroring the Apple backend behavior.
+//! This is a plain `gtk4::Widget` subclass that delegates measurement and
+//! placement to `WaterUI`'s Rust `Layout` engine, mirroring the Apple backend
+//! behavior. Children are parented with `set_parent` and allocated directly
+//! from `size_allocate` — the layout engine's rects are authoritative, so no
+//! GTK layout manager or size request sits between the engine and the child.
 
 use std::cell::RefCell;
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
-use gtk4::{Fixed, Widget, glib};
+use gtk4::{Widget, glib};
 use waterui_core::layout::{
     Layout, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions, measure_layout,
     with_memoized_children,
 };
 
-use crate::layout::{GtkSubView, place_children, update_positions};
+use crate::layout::{GtkSubView, apply_rects};
 
 fn layout_debug_enabled() -> bool {
     std::env::var_os("WATERUI_GTK_LAYOUT_DEBUG").is_some()
@@ -62,20 +65,22 @@ mod imp {
     pub struct WuiFixedContainer {
         pub layout: RefCell<Option<Box<dyn Layout>>>,
         pub children: RefCell<Vec<(Widget, StretchAxis)>>,
-        pub last_rects: RefCell<Vec<Rect>>,
-        pub last_size: RefCell<Option<(i32, i32)>>,
     }
 
     #[glib::object_subclass]
     impl ObjectSubclass for WuiFixedContainer {
         const NAME: &'static str = "WuiFixedContainer";
         type Type = super::WuiFixedContainer;
-        type ParentType = Fixed;
+        type ParentType = Widget;
     }
 
-    impl ObjectImpl for WuiFixedContainer {}
-
-    impl FixedImpl for WuiFixedContainer {}
+    impl ObjectImpl for WuiFixedContainer {
+        fn dispose(&self) {
+            while let Some(child) = self.obj().first_child() {
+                child.unparent();
+            }
+        }
+    }
 
     impl WidgetImpl for WuiFixedContainer {
         #[allow(
@@ -141,53 +146,14 @@ mod imp {
         )]
         fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
             self.parent_size_allocate(width, height, baseline);
-
-            let layout_borrow = self.layout.borrow();
-            let Some(layout) = layout_borrow.as_ref() else {
-                panic!("WuiFixedContainer: missing layout (internal error)");
-            };
-
-            let children = self.children.borrow();
-            if children.is_empty() {
-                return;
-            }
-
-            let subviews: Vec<GtkSubView> = children
-                .iter()
-                .map(|(w, axis)| GtkSubView::new(w.clone(), *axis))
-                .collect();
-            let refs: Vec<&dyn SubView> = subviews.iter().map(|v| v as &dyn SubView).collect();
-
-            let bounds = Rect::from_size(Size {
-                width: (width.max(0)) as f32,
-                height: (height.max(0)) as f32,
-            });
-
-            // Measure first with bounds-based proposal so children know available width/height.
-            let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
-            let rects = with_memoized_children(&refs, |refs| {
-                let _ = layout.size_that_fits(proposal, refs);
-                layout.place(bounds, refs)
-            });
-            if layout_debug_enabled() {
-                trace_layout_rects("allocate", width, height, children.len(), &rects);
-            }
-
-            // First placement adds children; subsequent placements only move/resize.
-            let mut last_rects = self.last_rects.borrow_mut();
-            if last_rects.is_empty() {
-                place_children(self.obj().upcast_ref::<Fixed>(), &rects, &children);
-            } else {
-                update_positions(self.obj().upcast_ref::<Fixed>(), &rects, &children);
-            }
-            *last_rects = rects;
+            self.obj().place_children(width, height, "allocate");
         }
     }
 }
 
 glib::wrapper! {
     pub struct WuiFixedContainer(ObjectSubclass<imp::WuiFixedContainer>)
-        @extends Fixed, Widget,
+        @extends Widget,
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget;
 }
 
@@ -213,26 +179,14 @@ impl WuiFixedContainer {
         measure_layout(layout.as_ref(), proposal, &refs)
     }
 
+    /// Runs the layout engine at `width`×`height` and allocates each child at
+    /// its resulting rect.
     #[allow(
         clippy::cast_precision_loss,
         reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
     )]
-    fn relayout(&self) {
-        let width = self.width();
-        let height = self.height();
-        if width <= 0 || height <= 0 {
-            return;
-        }
-
+    fn place_children(&self, width: i32, height: i32, operation: &'static str) {
         let imp = self.imp();
-        {
-            let mut last_size = imp.last_size.borrow_mut();
-            if *last_size == Some((width, height)) {
-                return;
-            }
-            *last_size = Some((width, height));
-        }
-
         let layout_borrow = imp.layout.borrow();
         let Some(layout) = layout_borrow.as_ref() else {
             panic!("WuiFixedContainer: missing layout (internal error)");
@@ -254,22 +208,16 @@ impl WuiFixedContainer {
             height: (height.max(0)) as f32,
         });
 
+        // Measure first with bounds-based proposal so children know available width/height.
         let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
         let rects = with_memoized_children(&refs, |refs| {
             let _ = layout.size_that_fits(proposal, refs);
             layout.place(bounds, refs)
         });
         if layout_debug_enabled() {
-            trace_layout_rects("relayout", width, height, children.len(), &rects);
+            trace_layout_rects(operation, width, height, children.len(), &rects);
         }
-
-        let mut last_rects = imp.last_rects.borrow_mut();
-        if last_rects.is_empty() {
-            place_children(self.upcast_ref::<Fixed>(), &rects, &children);
-        } else {
-            update_positions(self.upcast_ref::<Fixed>(), &rects, &children);
-        }
-        *last_rects = rects;
+        apply_rects(&rects, &children);
     }
 
     /// Creates a container that lays `children` out with `layout`.
@@ -289,18 +237,9 @@ impl WuiFixedContainer {
         *imp.layout.borrow_mut() = Some(layout);
         *imp.children.borrow_mut() = children;
 
-        // Add children to the fixed container once; positioning is handled in allocate.
         for (child, _) in imp.children.borrow().iter() {
-            obj.put(child, 0.0, 0.0);
+            child.set_parent(&obj);
         }
-
-        // In GTK4, subclassing Fixed does not provide reliable measure/allocate hooks for
-        // custom layout logic. Reflow on each frame while mapped so nested containers pick
-        // up parent allocation changes deterministically.
-        obj.add_tick_callback(|widget, _| {
-            widget.relayout();
-            glib::ControlFlow::Continue
-        });
 
         obj
     }
@@ -315,15 +254,18 @@ impl WuiFixedContainer {
     pub fn set_children(&self, children: Vec<(Widget, StretchAxis)>) {
         let imp = self.imp();
         for (child, _) in std::mem::take(&mut *imp.children.borrow_mut()) {
-            self.remove(&child);
+            child.unparent();
         }
         for (child, _) in &children {
-            self.put(child, 0.0, 0.0);
+            child.set_parent(self);
         }
         *imp.children.borrow_mut() = children;
-        imp.last_rects.borrow_mut().clear();
-        imp.last_size.borrow_mut().take();
         self.queue_resize();
-        self.relayout();
+        // Reflow immediately at the current allocation so freshly materialized
+        // children do not sit unallocated for a frame.
+        let (width, height) = (self.width(), self.height());
+        if width > 0 && height > 0 {
+            self.place_children(width, height, "set_children");
+        }
     }
 }

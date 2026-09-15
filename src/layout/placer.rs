@@ -1,148 +1,49 @@
-//! Layout placement utilities for GTK widgets.
+//! Applies `waterui-layout` results to GTK widgets.
 //!
-//! This module applies layout results from `waterui-layout` to GTK widgets
-//! using `gtk4::Fixed` for absolute positioning.
+//! A layout [`Rect`] becomes a [`Widget::allocate`] call carrying a translate
+//! transform: the widget receives the rect's border box and sits at
+//! `rect.origin + (margin_start, margin_top)` — [`GtkSubView`](super::GtkSubView)
+//! reports sizes in margin-box units, so the margin stays inside the rect.
+//!
+//! Placement deliberately never touches [`Widget::set_size_request`]. A size
+//! request is the widget's *intrinsic* size: `gtk_widget_measure` returns it
+//! verbatim, so writing a placement rect into the request would feed one
+//! transient allocation back into every later measurement and corrupt the
+//! layout engine's view of the tree.
 
 use gtk4::prelude::*;
-use gtk4::{Fixed, Widget};
+use gtk4::{Widget, graphene, gsk};
 use waterui_core::layout::{Rect, StretchAxis};
 
-fn layout_debug_enabled() -> bool {
-    std::env::var_os("WATERUI_GTK_LAYOUT_DEBUG").is_some()
-}
-
-fn resolve_size_request(widget: &Widget, axis: StretchAxis, req_w: i32, req_h: i32) -> (i32, i32) {
-    let width_request = req_w;
-    let type_name = widget.type_().name();
-    let is_layout_container = type_name == "WuiFixedContainer";
-    let is_gl_area = type_name == "GtkGLArea" || widget.is::<gtk4::GLArea>();
-    // Content-sized widgets should keep intrinsic height, but layout-driven
-    // containers / GPU surfaces must receive explicit height to avoid 0x0 allocations.
-    let keep_layout_height = axis.stretches_vertical() || is_layout_container || is_gl_area;
-    let height_request = if keep_layout_height { req_h } else { -1 };
-    (width_request, height_request)
-}
-
-/// Places children in a `Fixed` container according to layout results.
+/// Allocates each child at its layout-computed [`Rect`].
 ///
-/// # Arguments
-///
-/// * `container` - The `Fixed` container to place children in
-/// * `rects` - Layout results from `waterui-layout`
-/// * `children` - Child widgets to place
-///
-/// # Panics
-///
-/// Panics if `rects` and `children` have different lengths.
+/// `children` carries the same `(widget, axis)` tuples the container measured
+/// with; the axis is measurement metadata and plays no role in allocation —
+/// the rect already encodes everything the engine decided.
 #[allow(
     clippy::cast_possible_truncation,
-    reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+    clippy::cast_precision_loss,
+    reason = "WaterUI layout rects are f32 points while GTK allocation is integer pixels"
 )]
-pub fn place_children(container: &Fixed, rects: &[Rect], children: &[(Widget, StretchAxis)]) {
+pub fn apply_rects(rects: &[Rect], children: &[(Widget, StretchAxis)]) {
     assert_eq!(
         rects.len(),
         children.len(),
-        "rects and children must have the same length"
+        "layout must return one rect per child"
     );
-
-    for (rect, (widget, axis)) in rects.iter().zip(children) {
-        let margin_h = widget.margin_start() + widget.margin_end();
-        let margin_v = widget.margin_top() + widget.margin_bottom();
-        let req_w = (rect.width().round() as i32 - margin_h).max(0);
-        let req_h = (rect.height().round() as i32 - margin_v).max(0);
-        let (width_request, height_request) = resolve_size_request(widget, *axis, req_w, req_h);
-        if layout_debug_enabled() {
-            tracing::debug!(
-                target: "waterui::gtk::layout",
-                widget_type = %widget.type_().name(),
-                axis = ?axis,
-                requested_width = req_w,
-                requested_height = req_h,
-                applied_width = width_request,
-                applied_height = height_request,
-                x = rect.x(),
-                y = rect.y(),
-                width = rect.width(),
-                height = rect.height(),
-                "Placed GTK layout child"
-            );
-        }
-        let mut already_in_container = false;
-
-        // Remove from current parent if necessary
-        if let Some(parent) = widget.parent()
-            && let Some(fixed) = parent.downcast_ref::<Fixed>()
-        {
-            if fixed.as_ptr() == container.as_ptr() {
-                already_in_container = true;
-            } else {
-                fixed.remove(widget);
-            }
-        }
-
-        // Set size request
-        widget.set_size_request(width_request, height_request);
-
-        if already_in_container {
-            container.move_(widget, f64::from(rect.x()), f64::from(rect.y()));
-        } else {
-            container.put(widget, f64::from(rect.x()), f64::from(rect.y()));
-        }
+    for ((child, _axis), rect) in children.iter().zip(rects.iter()) {
+        let margin_start = child.margin_start() as f32;
+        let margin_top = child.margin_top() as f32;
+        let width = (rect.width() - margin_start - child.margin_end() as f32).max(0.0);
+        let height = (rect.height() - margin_top - child.margin_bottom() as f32).max(0.0);
+        child.allocate(
+            width.round() as i32,
+            height.round() as i32,
+            -1,
+            Some(gsk::Transform::default().translate(&graphene::Point::new(
+                rect.x() + margin_start,
+                rect.y() + margin_top,
+            ))),
+        );
     }
-}
-
-/// Updates the positions of already-placed children.
-///
-/// This is more efficient than `place_children` when children are already
-/// in the container and only positions have changed.
-///
-/// # Panics
-///
-/// Panics if `rects` and `children` have different lengths.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
-)]
-pub fn update_positions(container: &Fixed, rects: &[Rect], children: &[(Widget, StretchAxis)]) {
-    assert_eq!(
-        rects.len(),
-        children.len(),
-        "rects and children must have the same length"
-    );
-
-    for (rect, (widget, axis)) in rects.iter().zip(children) {
-        let margin_h = widget.margin_start() + widget.margin_end();
-        let margin_v = widget.margin_top() + widget.margin_bottom();
-        let req_w = (rect.width().round() as i32 - margin_h).max(0);
-        let req_h = (rect.height().round() as i32 - margin_v).max(0);
-        let (width_request, height_request) = resolve_size_request(widget, *axis, req_w, req_h);
-        if layout_debug_enabled() {
-            tracing::debug!(
-                target: "waterui::gtk::layout",
-                widget_type = %widget.type_().name(),
-                axis = ?axis,
-                requested_width = req_w,
-                requested_height = req_h,
-                applied_width = width_request,
-                applied_height = height_request,
-                x = rect.x(),
-                y = rect.y(),
-                width = rect.width(),
-                height = rect.height(),
-                "Updated GTK layout child position"
-            );
-        }
-
-        // Update size
-        widget.set_size_request(width_request, height_request);
-
-        // Move to new position
-        container.move_(widget, f64::from(rect.x()), f64::from(rect.y()));
-    }
-}
-
-/// Creates a `Fixed` container for layout.
-#[must_use]
-pub fn create_layout_container() -> Fixed {
-    Fixed::new()
 }
