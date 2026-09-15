@@ -81,7 +81,7 @@ impl GtkComponent for Native<BadgeConfig> {
                 let (value, color) = ctx.into_value();
                 let badge = badge.clone();
                 let css = css.clone();
-                glib::idle_add_once(move || apply_badge(&badge, &css, value, color));
+                glib::idle_add_local_once(move || apply_badge(&badge, &css, value, color));
             }
         });
         let (value, color) = initial;
