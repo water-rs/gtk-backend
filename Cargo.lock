@@ -6857,6 +6857,7 @@ dependencies = [
  "pin-project-lite",
  "pkg-config",
  "tracing",
+ "tracing-subscriber",
  "waterui",
  "waterui-assets",
  "waterui-backend-core",

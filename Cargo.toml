@@ -44,6 +44,7 @@ nami = "0.11.2"
 indexmap = "2"
 num-traits = { version = "0.2", default-features = false }
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "std"] }
 pin-project-lite = "0.2"
 executor-core = { version = "0.7.1", features = ["std"] }
 native-executor = "0.8.0"

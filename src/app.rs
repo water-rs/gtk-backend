@@ -51,6 +51,15 @@ impl LocalExecutor for GtkMainThreadExecutor {
 /// advertisement that lets `water inspect` find this application.
 #[must_use]
 pub fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> {
+    // The backend instruments its rendering paths with `tracing`, but a
+    // generated application has no subscriber unless one is installed here.
+    // `try_init` leaves an application-installed subscriber alone, and the
+    // env filter keeps the log quiet unless `RUST_LOG` opts into more.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .try_init();
+
     // GTK apps run UI rendering on the main thread. Initialize executors there so
     // spawn/spawn_local paths used by reactive bindings are always available.
     let _ = try_init_global_executor(NativeExecutor::new());
