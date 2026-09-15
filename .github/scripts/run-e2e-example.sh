@@ -1,43 +1,41 @@
 #!/usr/bin/env bash
-# Drives this shard's examples through `water package --platform linux
-# --backend gtk4 --release`, launches the staged binary directly, captures a
-# settled screenshot of each window, and diffs it against the golden in
-# e2e/goldens/. The release package keeps the binary a user would ship, so the
-# per-example metrics this run records — binary size, settled RSS, and
-# exec-to-first-window latency — describe the artifact, not a debug build.
+# Drives one example through `water package --platform linux --backend gtk4
+# --release`, launches the staged binary directly, captures a settled
+# screenshot of its window, and diffs it against the golden in e2e/goldens/.
+# The release package keeps the binary a user would ship, so the metrics this
+# run records — binary size, settled RSS, and exec-to-first-window latency —
+# describe the artifact, not a debug build.
 #
 # Must run inside an X session with a window manager — GTK4 toplevels only get
 # real focus when a WM is running. The workflow wraps this script in
 #   xvfb-run -a dbus-run-session -- sh -c 'openbox & sleep 2; exec …'
 #
-# Per example, failure means: the launcher died or never raised a window, the
-# capture stayed unsettled past the deadline, the frame is blank, or the frame
-# differs from its golden beyond the diff budget. A `<name>.skip` marker beside
-# a golden disables the pixel diff for that example (content check only);
-# `e2e/skip.txt` excludes examples that cannot run at all.
+# Failure means: the launcher died or never raised a window, the capture
+# stayed unsettled past the deadline, the frame is blank, or the frame
+# differs from its golden beyond the diff budget. A `<name>.skip` marker
+# beside a golden disables the pixel diff for that example (content check
+# only); `e2e/skip.txt` excludes examples that cannot run at all.
 #
-# Env: WATERUI_DIR, EXAMPLE_LOG_DIR, SHOTS_DIR, METRICS_DIR, SHARD_INDEX,
-# SHARD_TOTAL; optional BASELINES_DIR (default e2e/goldens in this repo),
-# RECORD=1 with RECORD_DIR to capture fresh baselines instead of comparing.
+# Env: WATERUI_DIR, EXAMPLE, EXAMPLE_LOG_DIR, SHOTS_DIR, METRICS_DIR;
+# optional BASELINES_DIR (default e2e/goldens in this repo), RECORD=1 with
+# RECORD_DIR to capture a fresh baseline instead of comparing.
 set -uo pipefail
 
 repo_root="${GITHUB_WORKSPACE:-$(pwd)}"
 waterui_dir="${WATERUI_DIR:?WATERUI_DIR must point at the waterui checkout}"
-scripts_dir="${repo_root}/.github/scripts"
 log_dir="${EXAMPLE_LOG_DIR:?}"
 shots_dir="${SHOTS_DIR:?}"
 metrics_dir="${METRICS_DIR:?}"
 baselines_dir="${BASELINES_DIR:-${repo_root}/e2e/goldens}"
 skip_file="${repo_root}/e2e/skip.txt"
-shard_index="${SHARD_INDEX:?}"
-shard_total="${SHARD_TOTAL:?}"
+example="${EXAMPLE:?EXAMPLE must name the example to run}"
 record="${RECORD:-0}"
 record_dir="${RECORD_DIR:-${repo_root}/e2e-candidates}"
 
 mkdir -p "${log_dir}" "${shots_dir}" "${record_dir}" "${metrics_dir}"
 
-# One target dir serves every generated backend crate in the shard: they share
-# the same dependency graph, so the first example's build warms the rest.
+# The generated backend crate shares waterui's dependency graph; the rust
+# cache warms it across runs.
 export CARGO_TARGET_DIR="${repo_root}/e2e-target"
 export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
 
@@ -54,8 +52,8 @@ DIFF_BUDGET=0.02              # normalized RMSE against the golden
 BLANK_STDDEV=10               # Q16 scale; a uniform fill reads ~0
 
 # A crashed client can wedge Xvfb mid-request; every helper call must stay
-# bounded or one crash freezes the whole shard behind a blocked xdotool or
-# import. PACKAGE_DEADLINE is generous — the first build in a shard is cold.
+# bounded or one crash freezes the whole job behind a blocked xdotool or
+# import. PACKAGE_DEADLINE is generous — the dependency build can be cold.
 PACKAGE_DEADLINE=1800
 X_TOOL_TIMEOUT=10
 CAPTURE_TIMEOUT=60
@@ -78,7 +76,7 @@ new_toplevel() {
 
 stop_launcher() {
     kill -- "-$1" 2>/dev/null || true
-    # A wedged app must not stall the shard: give SIGTERM a moment, then KILL.
+    # A wedged app must not stall the job: give SIGTERM a moment, then KILL.
     for _ in 1 2 3 4 5; do
         kill -0 "$1" 2>/dev/null || break
         sleep 1
@@ -95,12 +93,12 @@ normalized_rmse() {
     echo "${delta:-1}"
 }
 
-# Appends one JSON object per example to the shard's metrics file; missing
-# values stay null rather than reading as real zeros downstream.
+# Appends one JSON object to this example's metrics file; missing values stay
+# null rather than reading as real zeros downstream.
 record_metric() {
     printf '{"example":"%s","binary_bytes":%s,"rss_kib":%s,"peak_rss_kib":%s,"startup_ms":%s}\n' \
         "$1" "${2:-null}" "${3:-null}" "${4:-null}" "${5:-null}" \
-        >>"${metrics_dir}/metrics-${shard_index}.jsonl"
+        >>"${metrics_dir}/metrics-${1}.jsonl"
 }
 
 run_example() {
@@ -213,21 +211,11 @@ run_example() {
     return 1
 }
 
-mapfile -t examples < <("${scripts_dir}/discover-examples.sh")
-failures=()
-ran=0
-for i in "${!examples[@]}"; do
-    ((i % shard_total == shard_index)) || continue
-    name=${examples[i]}
-    if skipped "${name}"; then
-        echo "SKIP ${name}"
-        continue
-    fi
-    ran=$((ran + 1))
-    run_example "${name}" || failures+=("${name}")
-done
-
-echo "----"
-echo "shard ${shard_index}/${shard_total}: ${ran} run, ${#failures[@]} failed"
-((${#failures[@]})) && printf 'failed: %s\n' "${failures[@]}"
-((${#failures[@]} == 0))
+# The workflow's discover job already filters skip.txt out of the matrix; the
+# guard stays so a direct local invocation cannot silently run a skip-listed
+# example either.
+if skipped "${example}"; then
+    echo "SKIP ${example}"
+    exit 0
+fi
+run_example "${example}"
