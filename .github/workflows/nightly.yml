@@ -70,7 +70,7 @@ jobs:
             <(WATERUI_DIR="${{ github.workspace }}/waterui" ./.github/scripts/discover-examples.sh | sort) \
             <(grep -E '^\s*[^#[:space:]]' e2e/skip.txt | awk '{print $1}' | sort) \
             | tee /dev/stderr \
-            | jq -Rn '{example: [inputs]}' > /tmp/matrix.json
+            | jq -Rnc '{example: [inputs]}' > /tmp/matrix.json
           echo "matrix=$(cat /tmp/matrix.json)" >> "$GITHUB_OUTPUT"
 
   e2e:
