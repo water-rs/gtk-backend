@@ -13,7 +13,7 @@ pub use controls::{
 };
 pub use graphics::{color, gpu_surface, gradient, shape};
 pub use layout::{
-    container, divider, fixed_container_widget, lazy_container, list, scroll_view, spacer,
+    badge, container, divider, fixed_container_widget, lazy_container, list, scroll_view, spacer,
 };
 pub use nav::{menu, navigation, tabs};
 #[cfg(feature = "webview-system")]
