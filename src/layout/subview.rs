@@ -192,21 +192,3 @@ impl SubView for GtkSubView {
         self.priority
     }
 }
-
-/// Helper to determine the `StretchAxis` for common GTK widgets.
-#[must_use]
-pub fn stretch_axis_for_widget(widget: &Widget) -> StretchAxis {
-    // Check widget type and return appropriate stretch behavior
-    if widget.is::<gtk4::Label>() || widget.is::<gtk4::Button>() {
-        StretchAxis::None // Content-sized
-    } else if widget.is::<gtk4::Entry>()
-        || widget.is::<gtk4::Scale>()
-        || widget.is::<gtk4::ProgressBar>()
-    {
-        StretchAxis::Horizontal // Expands width
-    } else if widget.is::<gtk4::ScrolledWindow>() {
-        StretchAxis::Both // Greedy
-    } else {
-        StretchAxis::None // Default to content-sized
-    }
-}

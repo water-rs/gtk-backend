@@ -8,4 +8,4 @@ pub mod placer;
 pub mod subview;
 
 pub use placer::apply_rects;
-pub use subview::{GtkSubView, stretch_axis_for_widget};
+pub use subview::GtkSubView;

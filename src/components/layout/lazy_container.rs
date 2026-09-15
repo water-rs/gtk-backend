@@ -17,7 +17,7 @@ use crate::component::GtkComponent;
 use crate::components::fixed_container_widget::WuiFixedContainer;
 use crate::components::layout::keyed_model::{KeyedModel, list_item_id};
 use crate::renderer::GtkRenderer;
-use crate::util::{effective_stretch_axis, store_watcher_guard};
+use crate::util::store_watcher_guard;
 
 impl GtkComponent for Native<LazyContainer> {
     fn render(self, env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
@@ -184,9 +184,8 @@ fn materialize_children(
     (0..contents.len().get())
         .filter_map(|index| contents.get_view(index))
         .map(|view| {
-            let axis = effective_stretch_axis(&view);
             let mut renderer = GtkRenderer::new();
-            (renderer.render_any(view, env), axis)
+            renderer.render_any_with_axis(view, env)
         })
         .collect()
 }
