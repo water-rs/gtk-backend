@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Prepares a waterui checkout for driving the examples: clones waterui at the
-# requested ref (dev for the nightly), initializes the submodules example builds
-# resolve (`kit` and `utils/nami` are workspace members, so cargo cannot even
-# read the workspace without them), places this repository's tested tree at
+# requested ref (dev for the nightly), initializes whatever submodules that
+# revision still records (none, since water-rs/waterui#937; older revisions
+# carry workspace members there), places this repository's tested tree at
 # `backends/gtk`, and rewrites the checkout's `waterui-gtk` workspace
 # dependency to that path so every generated backend crate builds the backend
 # under test. The checkout declares `waterui-gtk` as a git dependency pinned to
@@ -18,7 +18,7 @@ waterui_ref="${WATERUI_REF:-dev}"
 echo "Using waterui ref: ${waterui_ref}"
 rm -rf "${waterui_dir}"
 git clone --depth 1 --branch "${waterui_ref}" https://github.com/water-rs/waterui.git "${waterui_dir}"
-git -C "${waterui_dir}" submodule update --init --depth 1 kit utils/nami
+git -C "${waterui_dir}" submodule update --init --depth 1
 
 mkdir -p "${waterui_dir}/backends/gtk"
 git -C "${repo_root}" archive HEAD | tar -x -C "${waterui_dir}/backends/gtk"
