@@ -9,7 +9,7 @@ name: Nightly E2E
 # retired nightly used to fake (water-rs/waterui#755).
 #
 # A red scheduled run opens a tracking issue from .github/E2E_FAILURE.md; the
-# per-shard artifacts carry every capture and launcher log. `golden_mode:
+# per-example artifacts carry the capture and launcher log. `golden_mode:
 # record` captures fresh baselines and uploads them as `e2e-candidates`
 # artifacts for review into e2e/goldens/.
 #
@@ -46,7 +46,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  SHARD_TOTAL: 4
   WATERUI_DIR: ${{ github.workspace }}/waterui
   EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
   SHOTS_DIR: ${{ github.workspace }}/e2e-shots
@@ -54,15 +53,35 @@ env:
   METRICS_DIR: ${{ github.workspace }}/e2e-metrics
 
 jobs:
-  e2e:
-    name: examples-${{ matrix.shard }}
+  discover:
+    name: Discover examples
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      # One job per example: runner capacity is plentiful, and full isolation
+      # means one crashing example can never take siblings down with it.
+      - name: Emit the runnable example matrix
+        id: list
+        run: |
+          git clone --depth 1 --branch dev https://github.com/water-rs/waterui.git waterui
+          comm -23 \
+            <(WATERUI_DIR="${{ github.workspace }}/waterui" ./.github/scripts/discover-examples.sh | sort) \
+            <(grep -E '^\s*[^#[:space:]]' e2e/skip.txt | awk '{print $1}' | sort) \
+            | tee /dev/stderr \
+            | jq -Rn '{example: [inputs]}' > /tmp/matrix.json
+          echo "matrix=$(cat /tmp/matrix.json)" >> "$GITHUB_OUTPUT"
+
+  e2e:
+    name: example-${{ matrix.example }}
+    needs: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
-      # One red shard must not hide another's result.
+      # One red example must not hide another's result.
       fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -100,20 +119,20 @@ jobs:
           git clone --depth 1 --branch dev https://github.com/water-rs/cli.git water-cli
           cargo install --path water-cli --locked --root "${{ github.workspace }}/cli-bin"
 
-      - name: Run the shard under Xvfb
+      - name: Run the example under Xvfb
         env:
-          SHARD_INDEX: ${{ matrix.shard }}
+          EXAMPLE: ${{ matrix.example }}
           RECORD: ${{ inputs.golden_mode == 'record' && 1 || 0 }}
         run: |
           export PATH="${{ github.workspace }}/cli-bin/bin:$PATH"
           xvfb-run -a -s "-screen 0 1280x1024x24" dbus-run-session -- \
-            sh -c 'openbox & sleep 2; exec ./.github/scripts/run-e2e-shard.sh'
+            sh -c 'openbox & sleep 2; exec ./.github/scripts/run-e2e-example.sh'
 
       - name: Upload captures
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-shots-${{ matrix.shard }}
+          name: e2e-shots-${{ matrix.example }}
           path: e2e-shots/
           retention-days: 14
 
@@ -121,7 +140,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-logs-${{ matrix.shard }}
+          name: e2e-logs-${{ matrix.example }}
           path: e2e-logs/
           retention-days: 14
 
@@ -129,7 +148,7 @@ jobs:
         if: inputs.golden_mode == 'record'
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-candidates-${{ matrix.shard }}
+          name: e2e-candidates-${{ matrix.example }}
           path: e2e-candidates/
           retention-days: 14
 
@@ -137,7 +156,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-metrics-${{ matrix.shard }}
+          name: e2e-metrics-${{ matrix.example }}
           path: e2e-metrics/
           retention-days: 90
 
