@@ -131,7 +131,11 @@ run_example() {
     local before launcher win launch_ms window_ms
     before=$(toplevel_windows)
     launch_ms=$(date +%s%3N)
-    setsid "${bin}" >>"${log}" 2>&1 &
+    # Backend diagnostics are emitted through `tracing`; without RUST_LOG the
+    # subscriber only shows errors, so per-example GPU lifecycle detail needs
+    # an explicit opt-in here. Output lands in the example's launcher log.
+    RUST_LOG="${RUST_LOG:-info,waterui_gtk=debug,waterui_graphics=debug,waterui_media=debug}" \
+        setsid "${bin}" >>"${log}" 2>&1 &
     launcher=$!
 
     win=""
