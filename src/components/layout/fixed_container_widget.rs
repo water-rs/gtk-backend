@@ -16,7 +16,7 @@ use waterui_core::layout::{
     with_memoized_children,
 };
 
-use crate::layout::{GtkSubView, apply_rects};
+use crate::layout::{FixedSizeSubView, GtkSubView, apply_rects};
 
 fn layout_debug_enabled() -> bool {
     std::env::var_os("WATERUI_GTK_LAYOUT_DEBUG").is_some()
@@ -120,6 +120,48 @@ mod imp {
             let size = measure_layout(layout.as_ref(), proposal, &refs).size;
             let w = size.width.max(0.0).round() as i32;
             let h = size.height.max(0.0).round() as i32;
+
+            // GTK parents that cannot scroll an axis — a ScrolledWindow's
+            // NEVER direction, a window's minimum size — read the *minimum*
+            // and clamp their allocation to it. Reporting the natural size as
+            // the minimum makes a wrapping label's full line the floor of a
+            // whole scrollable stack, so the scroll allocates the content
+            // wider than the viewport and the text never sees a bounded width
+            // to wrap at. Ask each child for its GTK minimum — for_size is
+            // the cross-axis constraint, so it propagates to the measured
+            // orientation only — then let the layout aggregate those floors
+            // (an hstack sums them, a vstack takes the widest, padding adds
+            // its insets).
+            let min_subviews: Vec<FixedSizeSubView> = children
+                .iter()
+                .map(|(widget, axis)| {
+                    let (min_w, min_h) = match orientation {
+                        gtk4::Orientation::Horizontal => {
+                            let (min_w, ..) =
+                                widget.measure(gtk4::Orientation::Horizontal, for_size);
+                            let (min_h, ..) = widget.measure(gtk4::Orientation::Vertical, -1);
+                            (min_w, min_h)
+                        }
+                        gtk4::Orientation::Vertical => {
+                            let (min_w, ..) = widget.measure(gtk4::Orientation::Horizontal, -1);
+                            let (min_h, ..) = widget.measure(gtk4::Orientation::Vertical, for_size);
+                            (min_w, min_h)
+                        }
+                        _ => panic!("WuiFixedContainer: unexpected orientation {orientation:?}"),
+                    };
+                    FixedSizeSubView::new(
+                        Size::new(min_w.max(0) as f32, min_h.max(0) as f32),
+                        *axis,
+                    )
+                })
+                .collect();
+            let min_refs: Vec<&dyn SubView> =
+                min_subviews.iter().map(|v| v as &dyn SubView).collect();
+            let min_size =
+                measure_layout(layout.as_ref(), ProposalSize::UNSPECIFIED, &min_refs).size;
+            let min_w = (min_size.width.max(0.0).round() as i32).min(w);
+            let min_h = (min_size.height.max(0.0).round() as i32).min(h);
+
             if layout_debug_enabled() {
                 tracing::debug!(
                     target: "waterui::gtk::layout",
@@ -127,6 +169,8 @@ mod imp {
                     for_size,
                     proposal_width = ?proposal.width,
                     proposal_height = ?proposal.height,
+                    min_width = min_w,
+                    min_height = min_h,
                     width = w,
                     height = h,
                     child_count = refs.len(),
@@ -134,8 +178,8 @@ mod imp {
                 );
             }
             match orientation {
-                gtk4::Orientation::Horizontal => (w, w, -1, -1),
-                gtk4::Orientation::Vertical => (h, h, -1, -1),
+                gtk4::Orientation::Horizontal => (min_w, w, -1, -1),
+                gtk4::Orientation::Vertical => (min_h, h, -1, -1),
                 _ => panic!("WuiFixedContainer: unexpected orientation {orientation:?}"),
             }
         }
@@ -267,5 +311,67 @@ impl WuiFixedContainer {
         if width > 0 && height > 0 {
             self.place_children(width, height, "set_children");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gtk4::Label;
+    use waterui_core::layout::{ProposalSize, StretchAxis, SubView};
+    use waterui_layout::stack::VStackLayout;
+
+    use super::*;
+    use crate::layout::subview::GtkSubView;
+
+    fn init() {
+        gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
+    }
+
+    /// A wrapping label's width must not shrink to fit a height proposal:
+    /// `for_size` on the horizontal measure asks GTK for the narrowest width
+    /// whose wrapped text still fits that height — the label would render one
+    /// word (or one character) per line inside fixed bounds.
+    #[test]
+    fn wrapping_label_reports_natural_width_under_height_proposal() {
+        init();
+        let label = Label::new(Some("Clipped"));
+        label.set_wrap(true);
+        label.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
+        let subview = GtkSubView::new(label.upcast(), StretchAxis::None);
+
+        let dims = subview.measure(ProposalSize::new(Some(80.0), Some(80.0)));
+
+        assert!(
+            dims.size.width > 30.0,
+            "label collapsed to {}px under an 80px height proposal",
+            dims.size.width
+        );
+    }
+
+    /// The container's reported minimum must stay below its natural size when
+    /// a child can compress: a `ScrolledWindow` with `NEVER` policy allocates
+    /// `max(viewport, child_minimum)`, so a minimum equal to the natural width
+    /// of a long label forces scrollable content wider than the window and
+    /// the text is clipped instead of wrapped.
+    #[test]
+    fn container_minimum_stays_below_natural_with_wrapping_text() {
+        init();
+        let label = Label::new(Some(
+            "a fairly long line of text that should wrap rather than overflow the viewport",
+        ));
+        label.set_wrap(true);
+        label.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
+        let container = WuiFixedContainer::new(
+            Box::new(VStackLayout::default()),
+            vec![(label.upcast(), StretchAxis::None)],
+        );
+
+        let (min_w, nat_w, ..) = container.measure(gtk4::Orientation::Horizontal, -1);
+
+        assert!(nat_w > 200, "long label natural width {nat_w}");
+        assert!(
+            min_w < nat_w,
+            "minimum {min_w} must stay below natural {nat_w}"
+        );
     }
 }

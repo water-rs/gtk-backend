@@ -27,6 +27,40 @@ pub struct GtkSubView {
     priority: i32,
 }
 
+/// A `SubView` that always reports a fixed size regardless of proposal.
+///
+/// Used by `WuiFixedContainer` to answer GTK's minimum-size query: each
+/// child's GTK minimum is captured eagerly, and the layout aggregates those
+/// floors into the container's honest minimum (an hstack sums them, a vstack
+/// takes the widest, padding adds its insets).
+#[derive(Debug)]
+pub struct FixedSizeSubView {
+    size: Size,
+    stretch_axis: StretchAxis,
+}
+
+impl FixedSizeSubView {
+    /// Wraps the given pre-computed size with the child's declared stretch axis.
+    #[must_use]
+    pub const fn new(size: Size, stretch_axis: StretchAxis) -> Self {
+        Self { size, stretch_axis }
+    }
+}
+
+impl SubView for FixedSizeSubView {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.size)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.stretch_axis
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
 impl GtkSubView {
     /// Creates a new `GtkSubView` wrapping the given widget.
     #[must_use]
@@ -104,20 +138,25 @@ impl SubView for GtkSubView {
             return dimensions;
         }
 
-        // Use GTK's measurement API
-        // -1 means "no constraint" in GTK's measure()
-
-        let for_height = proposal.height.map_or(-1, |h| h as i32);
-
+        // Use GTK's measurement API; -1 means "no constraint" in measure().
+        //
+        // `for_size` asks the opposite-axis question — "how small can you be
+        // while still fitting that extent". It is meaningful only in the
+        // height-for-width direction, where a wrapping GtkLabel's height
+        // genuinely depends on the width it will get. Passing the height
+        // proposal into the *width* measure asks the label for the narrowest
+        // width whose wrapped text still fits that height, collapsing honest
+        // text into a few columns (a "Clipped" label under an 80px-high
+        // proposal measures ~15px wide and renders one character per line).
+        // Width is therefore always measured unconstrained.
         let for_width = proposal.width.map_or(-1, |w| w as i32);
 
         // Measure horizontal (width)
-        let (_min_width, natural_width, _min_baseline, _nat_baseline) = self
-            .widget
-            .measure(gtk4::Orientation::Horizontal, for_height);
+        let (min_width, natural_width, _min_baseline, _nat_baseline) =
+            self.widget.measure(gtk4::Orientation::Horizontal, -1);
 
         // Measure vertical (height)
-        let (_min_height, natural_height, min_baseline, nat_baseline) =
+        let (min_height, natural_height, min_baseline, nat_baseline) =
             self.widget.measure(gtk4::Orientation::Vertical, for_width);
 
         // Default behavior: intrinsic size clamped by proposal.
@@ -143,20 +182,14 @@ impl SubView for GtkSubView {
             height = proposed.max(0.0);
         }
 
-        // Some stretch-based native views (e.g. GpuSurface/Spacer) have no intrinsic
-        // size and GTK reports 0x0. Respect the proposal in that case.
-        if width <= 0.0
-            && self.stretch_axis.stretches_horizontal()
-            && let Some(proposed) = proposal.width
-        {
-            width = proposed.max(0.0);
-        }
-        if height <= 0.0
-            && self.stretch_axis.stretches_vertical()
-            && let Some(proposed) = proposal.height
-        {
-            height = proposed.max(0.0);
-        }
+        // GTK's own minimum is a floor, not a suggestion: below it the widget
+        // still draws at its minimum, so reporting less lies to the layout.
+        // For a wrapping label this floor is the widest wrappable unit — and
+        // it is also what `WuiFixedContainer`'s minimum-size answer is built
+        // from, so it must surface here. (GTK occasionally reports a minimum
+        // above the natural under degenerate for_size values; clamp it.)
+        width = width.max((min_width.min(natural_width)) as f32);
+        height = height.max((min_height.min(natural_height)) as f32);
         if layout_debug_enabled() {
             tracing::debug!(
                 target: "waterui::gtk::layout",
@@ -164,7 +197,8 @@ impl SubView for GtkSubView {
                 proposal_width = ?proposal.width,
                 proposal_height = ?proposal.height,
                 for_width,
-                for_height,
+                min_width,
+                min_height,
                 natural_width,
                 natural_height,
                 width,

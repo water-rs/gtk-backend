@@ -8,4 +8,4 @@ pub mod placer;
 pub mod subview;
 
 pub use placer::apply_rects;
-pub use subview::GtkSubView;
+pub use subview::{FixedSizeSubView, GtkSubView};
