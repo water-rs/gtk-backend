@@ -93,6 +93,13 @@ normalized_rmse() {
     echo "${delta:-1}"
 }
 
+# A mapped toplevel that has not presented yet captures as a uniform fill.
+is_blank() {
+    local stdev
+    stdev=$(timeout "${CAPTURE_TIMEOUT}" identify -format '%[standard-deviation]' "$1" 2>/dev/null || echo 0)
+    (($(awk "BEGIN{print (${stdev:-0} <= ${BLANK_STDDEV})}") == 1))
+}
+
 # Appends one JSON object to this example's metrics file; missing values stay
 # null rather than reading as real zeros downstream.
 record_metric() {
@@ -167,6 +174,10 @@ run_example() {
     while ((SECONDS < deadline)); do
         sleep 3
         timeout "${CAPTURE_TIMEOUT}" import -window "${win}" "${shot}" >>"${log}" 2>&1 || break
+        # Two blank frames are trivially identical and would read as settled
+        # while the window is still on its way to its first present — a blank
+        # capture extends the wait, never satisfies it.
+        is_blank "${shot}" && continue
         if (($(awk "BEGIN{print ($(normalized_rmse "${prev}" "${shot}") <= ${SETTLE_BUDGET})}") == 1)); then
             settled=1
             break
@@ -203,9 +214,7 @@ run_example() {
         return 1
     fi
 
-    local stdev
-    stdev=$(timeout "${CAPTURE_TIMEOUT}" identify -format '%[standard-deviation]' "${shot}" 2>/dev/null || echo 0)
-    if (($(awk "BEGIN{print (${stdev:-0} <= ${BLANK_STDDEV})}") == 1)); then
+    if is_blank "${shot}"; then
         echo "FAIL ${name}: captured frame is blank"
         return 1
     fi
