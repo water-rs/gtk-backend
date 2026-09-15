@@ -134,8 +134,9 @@ run_example() {
     # Backend diagnostics are emitted through `tracing`; without RUST_LOG the
     # subscriber only shows errors, so per-example GPU lifecycle detail needs
     # an explicit opt-in here. Output lands in the example's launcher log.
-    RUST_LOG="${RUST_LOG:-info,waterui_gtk=debug,waterui_graphics=debug,waterui_media=debug}" \
+    RUST_LOG="${RUST_LOG:-info,waterui_gtk=debug,waterui_graphics=debug,waterui_media=debug,waterui::gtk::layout=debug}" \
         RUST_BACKTRACE=1 \
+        WATERUI_GTK_LAYOUT_DEBUG=1 \
         setsid "${bin}" >>"${log}" 2>&1 &
     launcher=$!
 
@@ -175,8 +176,11 @@ run_example() {
     rm -f "${prev}"
 
     # Read RSS at the settled frame, then stop the app; the numbers describe
-    # the idle-after-render state a user would actually hold open.
-    local rss_kib="" peak_rss_kib=""
+    # the idle-after-render state a user would actually hold open. A process
+    # that already crashed has no status to read and is a failure even when a
+    # capture exists — the frame is still recorded, but the example is red.
+    local crashed=0 rss_kib="" peak_rss_kib=""
+    kill -0 "${launcher}" 2>/dev/null || crashed=1
     if [[ -r /proc/${launcher}/status ]]; then
         rss_kib=$(awk '/^VmRSS/{print $2}' "/proc/${launcher}/status")
         peak_rss_kib=$(awk '/^VmHWM/{print $2}' "/proc/${launcher}/status")
@@ -186,6 +190,19 @@ run_example() {
         "$((window_ms - launch_ms))"
     ((settled)) || echo "WARN ${name}: frame never settled; using the last capture"
 
+    # In record mode the capture is still banked for review even when the run
+    # below is red — a crashing or blank example has the most to learn from.
+    local recorded=0
+    if ((record)) && [[ -s ${shot} ]]; then
+        cp "${shot}" "${record_dir}/${name}.png"
+        recorded=1
+    fi
+
+    if ((crashed)); then
+        echo "FAIL ${name}: app exited during capture (see log)"
+        return 1
+    fi
+
     local stdev
     stdev=$(timeout "${CAPTURE_TIMEOUT}" identify -format '%[standard-deviation]' "${shot}" 2>/dev/null || echo 0)
     if (($(awk "BEGIN{print (${stdev:-0} <= ${BLANK_STDDEV})}") == 1)); then
@@ -194,10 +211,11 @@ run_example() {
     fi
 
     if ((record)); then
-        cp "${shot}" "${record_dir}/${name}.png"
+        ((recorded)) || cp "${shot}" "${record_dir}/${name}.png"
         echo "RECORD ${name}"
         return 0
     fi
+
     if [[ -f ${baseline}.skip || -f ${baseline%.png}.skip ]]; then
         echo "PASS ${name} (content check only)"
         return 0

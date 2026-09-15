@@ -136,8 +136,11 @@ jobs:
           path: e2e-shots/
           retention-days: 14
 
+      # Always: the launcher log carries the app's stderr (tracing, panics),
+      # and a record-mode WARN exits zero while still being the interesting
+      # run to diagnose.
       - name: Upload launcher logs
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-logs-${{ matrix.example }}
