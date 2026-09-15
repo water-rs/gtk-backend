@@ -15,6 +15,7 @@ use waterui::accessibility::{
 };
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
+use waterui::component::badge::BadgeConfig;
 use waterui::component::list::ListConfig;
 use waterui::component::progress::ProgressConfig;
 use waterui::cursor::{Cursor, CursorStyle};
@@ -771,6 +772,7 @@ impl GtkRenderer {
         Self::register_native::<Spacer>(dispatcher);
         Self::register_native::<FixedContainer>(dispatcher);
         Self::register_native::<LazyContainer>(dispatcher);
+        Self::register_native::<BadgeConfig>(dispatcher);
         Self::register_native::<ButtonConfig>(dispatcher);
         Self::register_native::<ToggleConfig>(dispatcher);
         Self::register_native::<SliderConfig>(dispatcher);
