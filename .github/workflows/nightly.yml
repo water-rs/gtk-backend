@@ -93,25 +93,24 @@ jobs:
         working-directory: waterui
         run: rustup toolchain install
 
-      # The CLI lives in water-rs/cli since water-rs/waterui#899; install its
-      # dev branch so the e2e exercises the same generation logic the
-      # checkouts are written for. The clone precedes the cache step: the
-      # cache keys off the lockfile and restores into water-cli/target, and a
-      # clone into a restored directory refuses to run.
-      - name: Fetch the water CLI
-        run: git clone --depth 1 --branch dev https://github.com/water-rs/cli.git water-cli
-
-      # The single writer of the shared cache: the CLI's target directory and
-      # the release target every example job packages into.
+      # The single writer of the shared cache. A GitHub cache entry only
+      # matches a restore that names the same paths, so this declaration is
+      # identical to the example jobs' and the CLI builds into the same
+      # target directory rather than one of its own.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: nightly-e2e
-          workspaces: |
-            water-cli -> target
-            waterui -> ../e2e-target
+          workspaces: waterui -> ../e2e-target
 
+      # The CLI lives in water-rs/cli since water-rs/waterui#899; install its
+      # dev branch so the e2e exercises the same generation logic the
+      # checkouts are written for.
       - name: Install the water CLI
-        run: cargo install --path water-cli --locked --root "${{ github.workspace }}/cli-bin"
+        run: |
+          git clone --depth 1 --branch dev https://github.com/water-rs/cli.git water-cli
+          cargo install --path water-cli --locked \
+            --target-dir "${{ github.workspace }}/e2e-target" \
+            --root "${{ github.workspace }}/cli-bin"
 
       - name: Upload the water CLI
         uses: actions/upload-artifact@v4
@@ -163,8 +162,7 @@ jobs:
         with:
           shared-key: nightly-e2e
           save-if: false
-          workspaces: |
-            waterui -> ../e2e-target
+          workspaces: waterui -> ../e2e-target
 
       - uses: actions/download-artifact@v4
         with:
