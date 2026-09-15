@@ -41,6 +41,10 @@ mkdir -p "${log_dir}" "${shots_dir}" "${record_dir}" "${metrics_dir}"
 export CARGO_TARGET_DIR="${repo_root}/e2e-target"
 export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
 
+# Multi-GiB examples (stress peaked near 4 GiB RSS) would otherwise spend
+# minutes writing cores on every crash.
+ulimit -c 0
+
 # The window wait starts after `water package` finishes, so it only covers
 # process spawn to first mapped toplevel — a healthy app maps in seconds.
 WINDOW_APPEAR_DEADLINE=120
@@ -48,6 +52,13 @@ SETTLE_DEADLINE=90            # frames stable before capture
 SETTLE_BUDGET=0.005           # normalized RMSE between consecutive frames
 DIFF_BUDGET=0.02              # normalized RMSE against the golden
 BLANK_STDDEV=10               # Q16 scale; a uniform fill reads ~0
+
+# A crashed client can wedge Xvfb mid-request; every helper call must stay
+# bounded or one crash freezes the whole shard behind a blocked xdotool or
+# import. PACKAGE_DEADLINE is generous — the first build in a shard is cold.
+PACKAGE_DEADLINE=1800
+X_TOOL_TIMEOUT=10
+CAPTURE_TIMEOUT=60
 
 skipped() {
     [[ -f ${skip_file} ]] \
@@ -58,7 +69,7 @@ toplevel_windows() {
     # Match on the WM_CLASS res_name (the binary's prgname, always set by GTK)
     # rather than the window title: examples that never assign a title leave
     # WM_NAME empty and would be invisible to a --name filter.
-    xdotool search --onlyvisible --screen 0 --classname '.*' 2>/dev/null | sort -n
+    timeout "${X_TOOL_TIMEOUT}" xdotool search --onlyvisible --screen 0 --classname '.*' 2>/dev/null | sort -n
 }
 
 new_toplevel() {
@@ -78,7 +89,7 @@ stop_launcher() {
 
 normalized_rmse() {
     local delta
-    delta=$(compare -metric RMSE "$1" "$2" null: 2>&1 || true)
+    delta=$(timeout "${CAPTURE_TIMEOUT}" compare -metric RMSE "$1" "$2" null: 2>&1 || true)
     delta="${delta##*\(}"
     delta="${delta%%\)*}"
     echo "${delta:-1}"
@@ -102,8 +113,8 @@ run_example() {
 
     # Packaging produces the same binary a user would run; measuring it keeps
     # size/RSS/startup honest instead of reporting debug-profile numbers.
-    if ! water package --platform linux --backend gtk4 --release >>"${log}" 2>&1; then
-        echo "FAIL ${name}: water package failed (see log)"
+    if ! timeout "${PACKAGE_DEADLINE}" water package --platform linux --backend gtk4 --release >>"${log}" 2>&1; then
+        echo "FAIL ${name}: water package failed or exceeded ${PACKAGE_DEADLINE}s (see log)"
         return 1
     fi
 
@@ -147,11 +158,11 @@ run_example() {
     fi
 
     local prev="${shots_dir}/.${name}.prev.png" settled=0
-    import -window "${win}" "${prev}" >>"${log}" 2>&1
+    timeout "${CAPTURE_TIMEOUT}" import -window "${win}" "${prev}" >>"${log}" 2>&1
     deadline=$((SECONDS + SETTLE_DEADLINE))
     while ((SECONDS < deadline)); do
         sleep 3
-        import -window "${win}" "${shot}" >>"${log}" 2>&1 || break
+        timeout "${CAPTURE_TIMEOUT}" import -window "${win}" "${shot}" >>"${log}" 2>&1 || break
         if (($(awk "BEGIN{print ($(normalized_rmse "${prev}" "${shot}") <= ${SETTLE_BUDGET})}") == 1)); then
             settled=1
             break
@@ -173,7 +184,7 @@ run_example() {
     ((settled)) || echo "WARN ${name}: frame never settled; using the last capture"
 
     local stdev
-    stdev=$(identify -format '%[standard-deviation]' "${shot}" 2>/dev/null || echo 0)
+    stdev=$(timeout "${CAPTURE_TIMEOUT}" identify -format '%[standard-deviation]' "${shot}" 2>/dev/null || echo 0)
     if (($(awk "BEGIN{print (${stdev:-0} <= ${BLANK_STDDEV})}") == 1)); then
         echo "FAIL ${name}: captured frame is blank"
         return 1
