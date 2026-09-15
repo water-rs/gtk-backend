@@ -134,8 +134,9 @@ run_example() {
     # Backend diagnostics are emitted through `tracing`; without RUST_LOG the
     # subscriber only shows errors, so per-example GPU lifecycle detail needs
     # an explicit opt-in here. Output lands in the example's launcher log.
-    RUST_LOG="${RUST_LOG:-info,waterui_gtk=debug,waterui_graphics=debug,waterui_media=debug}" \
+    RUST_LOG="${RUST_LOG:-info,waterui_gtk=debug,waterui_graphics=debug,waterui_media=debug,waterui::gtk::layout=debug}" \
         RUST_BACKTRACE=1 \
+        WATERUI_GTK_LAYOUT_DEBUG=1 \
         setsid "${bin}" >>"${log}" 2>&1 &
     launcher=$!
 
