@@ -136,6 +136,16 @@ mod webkitgtk {
     }
 
     #[repr(C)]
+    pub struct WebKitBackForwardList {
+        _private: [u8; 0],
+    }
+
+    #[repr(C)]
+    pub struct WebKitBackForwardListItem {
+        _private: [u8; 0],
+    }
+
+    #[repr(C)]
     pub struct WebKitUserScript {
         _private: [u8; 0],
     }
@@ -236,6 +246,9 @@ mod webkitgtk {
         fn webkit_web_view_reload(web_view: *mut WebKitWebView);
         fn webkit_web_view_can_go_back(web_view: *mut WebKitWebView) -> glib::ffi::gboolean;
         fn webkit_web_view_can_go_forward(web_view: *mut WebKitWebView) -> glib::ffi::gboolean;
+        fn webkit_web_view_get_back_forward_list(
+            web_view: *mut WebKitWebView,
+        ) -> *mut WebKitBackForwardList;
         fn webkit_web_view_get_user_content_manager(
             web_view: *mut WebKitWebView,
         ) -> *mut WebKitUserContentManager;
@@ -776,6 +789,14 @@ mod webkitgtk {
                 );
             }
         }
+    }
+
+    /// The view's back-forward list — owned by the view, so it lives exactly
+    /// as long as the view and needs no reference juggling.
+    pub(super) fn back_forward_list(ptr: NonNull<WebKitWebView>) -> NonNull<WebKitBackForwardList> {
+        // SAFETY: `ptr` is a live `WebKitWebView`.
+        NonNull::new(unsafe { webkit_web_view_get_back_forward_list(ptr.as_ptr()) })
+            .expect("webkit_web_view_get_back_forward_list returned null (fast-fail)")
     }
 
     pub(super) fn current_uri(ptr: NonNull<WebKitWebView>) -> String {
@@ -1475,7 +1496,9 @@ impl GtkWebViewHandle {
         // WebKitGTK 6.0 reports the back/forward lists through methods only —
         // `can-go-back` and `can-go-forward` are not `GObject` properties — so
         // `install_signal_handlers` re-emits `NavigationState` from
-        // `load-changed`, the point the lists actually change.
+        // `load-changed` for document loads and from the back-forward list's
+        // own `changed` signal, which also covers the same-document entries
+        // (`pushState`, in-page anchors) `load-changed` never sees.
     }
 
     #[cfg(all(
@@ -1579,21 +1602,21 @@ impl GtkWebViewHandle {
         let load_changed_signal =
             std::ffi::CString::new("load-changed").expect("valid signal name");
         // SAFETY: `on_load_changed` has the `load-changed` signal's C
-        // prototype; `GCallback` erases the signature, so the transmute only
-        // renames it.
+        // prototype — the signal returns void; `GCallback` erases the
+        // signature, so the transmute only renames it.
         let load_changed_callback = Some(unsafe {
             std::mem::transmute::<
-                unsafe extern "C" fn(
-                    *mut webkitgtk::WebKitWebView,
-                    i32,
-                    *mut std::ffi::c_void,
-                ) -> gtk4::glib::ffi::gboolean,
+                unsafe extern "C" fn(*mut webkitgtk::WebKitWebView, i32, *mut std::ffi::c_void),
                 unsafe extern "C" fn(),
             >(on_load_changed)
         });
-        let load_changed_data = LoadChangedData {
+        // Both history signals feed one deduplicated state, so whichever fires
+        // first reports the edge and the other finds the pair already current.
+        let last_navigation = Rc::new(Cell::new((false, false)));
+        let load_changed_data = NavigationStateData {
             shared: self.shared.clone(),
-            last: Cell::new((false, false)),
+            view: self.widget.downgrade(),
+            last: Rc::clone(&last_navigation),
         };
         // SAFETY: `webview_obj` is the live view's `GObject`, the signal name is
         // a WebKitGTK signal, and the callback's type matches its prototype.
@@ -1603,6 +1626,43 @@ impl GtkWebViewHandle {
                 &load_changed_signal,
                 load_changed_callback,
                 load_changed_data,
+            );
+        }
+
+        let back_forward_list = webkitgtk::back_forward_list(self.native.ptr);
+        let back_forward_changed_signal =
+            std::ffi::CString::new("changed").expect("valid signal name");
+        // SAFETY: `on_back_forward_list_changed` has the
+        // `WebKitBackForwardList::changed` signal's C prototype — the signal
+        // returns void; `GCallback` erases the signature, so the transmute only
+        // renames it.
+        let back_forward_changed_callback = Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(
+                    *mut webkitgtk::WebKitBackForwardList,
+                    *mut webkitgtk::WebKitBackForwardListItem,
+                    *mut gtk4::glib::ffi::GList,
+                    *mut std::ffi::c_void,
+                ),
+                unsafe extern "C" fn(),
+            >(on_back_forward_list_changed)
+        });
+        let back_forward_changed_data = NavigationStateData {
+            shared: self.shared.clone(),
+            view: self.widget.downgrade(),
+            last: last_navigation,
+        };
+        // SAFETY: `back_forward_list` is the live `GObject` this signal fires
+        // on, the signal name names its `changed` signal, and the callback's
+        // type matches its prototype. The payload holds the view weakly, so
+        // the connection — owned by the list, which the view owns — cannot
+        // keep the view alive.
+        unsafe {
+            webkitgtk::connect_signal(
+                back_forward_list.as_ptr().cast(),
+                &back_forward_changed_signal,
+                back_forward_changed_callback,
+                back_forward_changed_data,
             );
         }
     }
@@ -2274,13 +2334,17 @@ struct TlsFailedData {
     not(target_os = "macos")
 ))]
 #[derive(Clone)]
-struct LoadChangedData {
+struct NavigationStateData {
     shared: Rc<SharedState>,
-    /// The last emitted `(can_go_back, can_go_forward)` — `load-changed`
-    /// fires on every load event while the lists change only on commit, so
-    /// the emission is deduplicated to the change the notify observers would
-    /// have reported.
-    last: Cell<(bool, bool)>,
+    /// Weak, because this data lives in closures the web view's own objects —
+    /// the view for `load-changed`, its back-forward list for `changed` — own:
+    /// a strong reference here would keep the view alive forever.
+    view: gtk4::glib::WeakRef<Widget>,
+    /// The last emitted `(can_go_back, can_go_forward)`, shared by the
+    /// `load-changed` and `WebKitBackForwardList::changed` connections so
+    /// whichever fires first reports the change edge and the other sees the
+    /// pair already current — the dedup the notify observers gave for free.
+    last: Rc<Cell<(bool, bool)>>,
 }
 
 #[cfg(all(
@@ -2800,16 +2864,48 @@ unsafe extern "C" fn on_load_failed_with_tls_errors(
     not(target_os = "macos")
 ))]
 unsafe extern "C" fn on_load_changed(
-    web_view: *mut webkitgtk::WebKitWebView,
+    _web_view: *mut webkitgtk::WebKitWebView,
     _load_event: i32,
     user_data: *mut std::ffi::c_void,
-) -> gtk4::glib::ffi::gboolean {
-    // SAFETY: `user_data` is the `LoadChangedData` box the signal connection
-    // owns for the connection's lifetime.
-    let data = unsafe { &*(user_data.cast::<LoadChangedData>()) };
-    // SAFETY: `web_view` is the live view this signal fired on, so it is a
-    // valid `NonNull` for the getter wrappers.
-    let view = unsafe { std::ptr::NonNull::new_unchecked(web_view) };
+) {
+    // SAFETY: `user_data` is the `NavigationStateData` box the signal
+    // connection owns for the connection's lifetime.
+    let data = unsafe { &*(user_data.cast::<NavigationStateData>()) };
+    emit_navigation_state(data);
+}
+
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+unsafe extern "C" fn on_back_forward_list_changed(
+    _back_forward_list: *mut webkitgtk::WebKitBackForwardList,
+    _item_added: *mut webkitgtk::WebKitBackForwardListItem,
+    _items_removed: *mut gtk4::glib::ffi::GList,
+    user_data: *mut std::ffi::c_void,
+) {
+    // SAFETY: `user_data` is the `NavigationStateData` box the signal
+    // connection owns for the connection's lifetime.
+    let data = unsafe { &*(user_data.cast::<NavigationStateData>()) };
+    emit_navigation_state(data);
+}
+
+/// Re-reads `can_go_back`/`can_go_forward` and emits `NavigationState` when the
+/// pair moved — the method-only query `WebKitGTK` 6.0 offers, deduplicated to
+/// the change edge the `notify` observers used to report.
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+fn emit_navigation_state(data: &NavigationStateData) {
+    let Some(widget) = data.view.upgrade() else {
+        return;
+    };
+    let view = webview_ptr(&widget);
     let back = webkitgtk::can_go_back(view);
     let forward = webkitgtk::can_go_forward(view);
     if (back, forward) != data.last.get() {
@@ -2819,5 +2915,4 @@ unsafe extern "C" fn on_load_changed(
             can_go_forward: forward,
         });
     }
-    0
 }
