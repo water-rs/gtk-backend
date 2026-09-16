@@ -54,6 +54,9 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   WATERUI_DIR: ${{ github.workspace }}/waterui
+  # Diag only: dev's layout API broke the committed pin; run against the
+  # revision this tree actually compiles against. Never merge to dev.
+  WATERUI_REF: 475b4bb884a5f4e2b1156f1af74c40feaf71fdc1
   EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
   SHOTS_DIR: ${{ github.workspace }}/e2e-shots
   RECORD_DIR: ${{ github.workspace }}/e2e-candidates

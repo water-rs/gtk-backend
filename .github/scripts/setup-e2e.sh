@@ -17,7 +17,16 @@ waterui_ref="${WATERUI_REF:-dev}"
 
 echo "Using waterui ref: ${waterui_ref}"
 rm -rf "${waterui_dir}"
-git clone --depth 1 --branch "${waterui_ref}" https://github.com/water-rs/waterui.git "${waterui_dir}"
+if [[ "${waterui_ref}" =~ ^[0-9a-f]{40}$ ]]; then
+  # A raw commit is not a clone --branch target; fetch it directly.
+  mkdir -p "${waterui_dir}"
+  git -C "${waterui_dir}" init -q
+  git -C "${waterui_dir}" remote add origin https://github.com/water-rs/waterui.git
+  git -C "${waterui_dir}" fetch --depth 1 -q origin "${waterui_ref}"
+  git -C "${waterui_dir}" checkout -q FETCH_HEAD
+else
+  git clone --depth 1 --branch "${waterui_ref}" https://github.com/water-rs/waterui.git "${waterui_dir}"
+fi
 git -C "${waterui_dir}" submodule update --init --depth 1
 
 mkdir -p "${waterui_dir}/backends/gtk"
