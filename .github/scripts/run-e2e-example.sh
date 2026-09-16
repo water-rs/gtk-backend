@@ -34,6 +34,12 @@ record_dir="${RECORD_DIR:-${repo_root}/e2e-candidates}"
 
 mkdir -p "${log_dir}" "${shots_dir}" "${record_dir}" "${metrics_dir}"
 
+# Diagnostic branch only: the runner image has no gdb; install it so the
+# launcher can run every example under a batch backtrace harness.
+if ! command -v gdb >/dev/null 2>&1; then
+    sudo apt-get update -qq && sudo apt-get install -y -qq gdb >/dev/null
+fi
+
 # The generated backend crate shares waterui's dependency graph; the rust
 # cache warms it across runs.
 export CARGO_TARGET_DIR="${repo_root}/e2e-target"
