@@ -785,16 +785,11 @@ mod webkitgtk {
         cstr_to_string(raw)
     }
 
-    /// Injects `source`, restricted to the documents `allow_list` describes.
-    ///
-    /// `None` is `WebKit`'s "every document"; a list restricts injection to the
-    /// URI patterns in it. An *empty* list is never passed: `WebKit` reads it as
-    /// no restriction, so the caller must not inject at all in that case.
+    /// Injects `source` into every document the view loads.
     pub(super) fn add_user_script(
         manager: NonNull<WebKitUserContentManager>,
         source: &str,
         time: ScriptInjectionTime,
-        allow_list: Option<&[Str]>,
     ) {
         let Some(source) = cstring(source) else {
             return;
@@ -803,37 +798,14 @@ mod webkitgtk {
             ScriptInjectionTime::DocumentStart => WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
             ScriptInjectionTime::DocumentEnd => WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END,
         };
-        let patterns: Option<Vec<CString>> = allow_list.map(|patterns| {
-            assert!(
-                !patterns.is_empty(),
-                "an empty WebKit allow list injects everywhere; do not inject instead (fast-fail)"
-            );
-            patterns
-                .iter()
-                .map(|pattern| {
-                    cstring(pattern.as_str()).expect("an origin pattern must not contain NUL")
-                })
-                .collect()
-        });
-        // Kept alive for the whole call: WebKit copies the strings out of it.
-        let allow_pointers: Option<Vec<*const c_char>> = patterns.as_ref().map(|patterns| {
-            patterns
-                .iter()
-                .map(|pattern| pattern.as_ptr())
-                .chain(std::iter::once(std::ptr::null()))
-                .collect()
-        });
-        let allow_list = allow_pointers
-            .as_ref()
-            .map_or(std::ptr::null(), std::vec::Vec::as_ptr);
-        // SAFETY: `source`, `allow_list` and the strings behind it are live
-        // NUL-terminated buffers for the call, and WebKit copies what it keeps.
+        // SAFETY: `source` is a live NUL-terminated string for the call, and
+        // WebKit copies what it keeps.
         let script = unsafe {
             webkit_user_script_new(
                 source.as_ptr(),
                 WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
                 injection_time,
-                allow_list,
+                std::ptr::null(),
                 std::ptr::null(),
             )
         };
@@ -998,33 +970,6 @@ mod webkitgtk {
             });
         }
         Ok(value)
-    }
-
-    /// The strictest injection pattern `WebKit` can express for `rule`.
-    ///
-    /// [`OriginRule::injection_pattern`] renders the rule exactly, port and all,
-    /// but `WebKit`'s `UserContentURLPattern` rejects a pattern whose host
-    /// contains `:` and an invalid pattern matches nothing — so passing
-    /// `http://localhost:3000/*` through would inject nowhere and leave a dev
-    /// server with no bridge at all. `WebKit`'s filter is host-granular, so a
-    /// ported origin becomes the pattern for its host, and the port is enforced
-    /// exactly where it can be: the origin check on every bridge message.
-    ///
-    /// The URI is taken apart by `GLib` rather than by string surgery here.
-    pub(super) fn injection_pattern(rule: &waterui_webview::OriginRule) -> Str {
-        let waterui_webview::OriginRule::Exact(origin) = rule else {
-            return rule.injection_pattern();
-        };
-        let parsed = glib::Uri::parse(origin, glib::UriFlags::NONE)
-            .unwrap_or_else(|error| panic!("`{origin}` is not a usable origin: {error}"));
-        if parsed.port() < 0 {
-            return rule.injection_pattern();
-        }
-        let scheme = parsed.scheme();
-        let host = parsed
-            .host()
-            .unwrap_or_else(|| panic!("`{origin}` names a port but no host"));
-        Str::from(format!("{scheme}://{host}/*"))
     }
 
     /// The origin `WebKit` itself reports for a document at `uri`, in the
@@ -1673,17 +1618,17 @@ impl GtkWebViewHandle {
         self.install_signal_handlers();
     }
 
-    /// Reinstalls every user script, restricted to the documents the bridge
-    /// origin policy admits.
+    /// Reinstalls every user script into every document the view loads.
     ///
     /// `WebKit` has no "replace this script" call, so the whole set is rebuilt;
     /// that is also what makes an [`inject_script`](WebViewHandle::inject_script)
     /// under an existing key replace rather than stack.
     ///
-    /// Nothing is injected while no policy admits anything. The scripts carry the
-    /// bridge and the mirrored-state seed — the seed being the current *values*
-    /// of the exposed state — so injecting them into a document that may not use
-    /// the bridge hands that document state it is not allowed to read.
+    /// Injection is unconditional — `call_async_javascript` needs the shared
+    /// `__wateruiEval` wrapper on every document, bridge or not, and a handle
+    /// opened through the bare controller may never see a policy call. The
+    /// origin policy's only gate is the authentication check on each incoming
+    /// bridge message; the WPE and CEF backends install the same way.
     #[cfg(all(
         feature = "webkitgtk",
         gtk_webkitgtk_link_available,
@@ -1692,22 +1637,6 @@ impl GtkWebViewHandle {
     ))]
     fn rebuild_user_scripts(&self) {
         webkitgtk::remove_all_scripts(self.native.manager);
-        let policy = self.shared.bridge_origins.borrow().clone();
-        let Some(rules) = policy.as_ref().map(waterui_webview::OriginPolicy::rules) else {
-            // No policy installed yet; one always arrives before the first
-            // handler is registered.
-            return;
-        };
-        let allow_list: Option<Vec<Str>> = match rules.as_slice() {
-            // Deny-all: no document may reach the bridge, so nothing is injected.
-            // WebKit reads an *empty* allow list as "no restriction", which is why
-            // this case cannot be expressed as one.
-            [] => return,
-            // WebKit's own spelling of "every document" is a null allow list.
-            [waterui_webview::OriginRule::Any] => None,
-            rules => Some(rules.iter().map(webkitgtk::injection_pattern).collect()),
-        };
-        let allow_list = allow_list.as_deref();
 
         // Transport first: the shared script calls `__wateruiSend`, so the adapter
         // onto WebKitGTK's message handler has to exist before it runs.
@@ -1715,22 +1644,15 @@ impl GtkWebViewHandle {
             self.native.manager,
             TRANSPORT_SCRIPT,
             ScriptInjectionTime::DocumentStart,
-            allow_list,
         );
         webkitgtk::add_user_script(
             self.native.manager,
             waterui_webview::DOCUMENT_START_SCRIPT,
             ScriptInjectionTime::DocumentStart,
-            allow_list,
         );
         let custom = self.native.custom_scripts.borrow().clone();
         for script in custom {
-            webkitgtk::add_user_script(
-                self.native.manager,
-                &script.source,
-                script.time,
-                allow_list,
-            );
+            webkitgtk::add_user_script(self.native.manager, &script.source, script.time);
         }
     }
 
@@ -2008,16 +1930,10 @@ impl WebViewHandle for GtkWebViewHandle {
     }
 
     fn set_bridge_origins(&self, policy: waterui_webview::OriginPolicy) {
+        // Stored for the authentication check on every incoming bridge
+        // message; it does not gate script injection — see
+        // `rebuild_user_scripts`.
         self.shared.bridge_origins.replace(Some(policy));
-        // The policy decides where the bridge and the mirrored-state seed are
-        // injected, so the installed scripts are reinstalled under the new one.
-        #[cfg(all(
-            feature = "webkitgtk",
-            gtk_webkitgtk_link_available,
-            unix,
-            not(target_os = "macos")
-        ))]
-        self.rebuild_user_scripts();
     }
 
     fn remove_handler(&self, name: &str) {
