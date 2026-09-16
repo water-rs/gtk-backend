@@ -34,6 +34,12 @@ record_dir="${RECORD_DIR:-${repo_root}/e2e-candidates}"
 
 mkdir -p "${log_dir}" "${shots_dir}" "${record_dir}" "${metrics_dir}"
 
+# Diagnostic branch only: the runner image has no gdb; install it so the
+# launcher can run every example under a batch backtrace harness.
+if ! command -v gdb >/dev/null 2>&1; then
+    sudo apt-get update -qq && sudo apt-get install -y -qq gdb >/dev/null
+fi
+
 # The generated backend crate shares waterui's dependency graph; the rust
 # cache warms it across runs.
 export CARGO_TARGET_DIR="${repo_root}/e2e-target"
@@ -75,6 +81,16 @@ new_toplevel() {
 }
 
 stop_launcher() {
+    # Diag: TERM the inferior alone -- its controlling gdb intercepts the
+    # signal, dumps every thread's backtrace, then exits with the process.
+    # This captures stacks of wedged apps, not just crashes.
+    local inferior
+    inferior=$(pgrep -P "$1" | head -1)
+    [[ -n ${inferior} ]] && kill -TERM "${inferior}" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+        kill -0 "$1" 2>/dev/null || break
+        sleep 1
+    done
     kill -- "-$1" 2>/dev/null || true
     # A wedged app must not stall the job: give SIGTERM a moment, then KILL.
     for _ in 1 2 3 4 5; do
@@ -144,7 +160,14 @@ run_example() {
     RUST_LOG="${RUST_LOG:-info,waterui_gtk=debug,waterui_graphics=debug,waterui_media=debug,waterui::gtk::layout=debug}" \
         RUST_BACKTRACE=1 \
         WATERUI_GTK_LAYOUT_DEBUG=1 \
-        setsid "${bin}" >>"${log}" 2>&1 &
+        setsid gdb -batch \
+            -ex 'run' \
+            -ex 'echo \n=== STOP BACKTRACE ===\n' \
+            -ex 'bt' \
+            -ex 'thread apply all bt' \
+            -ex 'info registers' \
+            -ex 'quit' \
+            --args "${bin}" >>"${log}" 2>&1 &
     launcher=$!
 
     win=""
@@ -190,11 +213,21 @@ run_example() {
     # the idle-after-render state a user would actually hold open. A process
     # that already crashed has no status to read and is a failure even when a
     # capture exists — the frame is still recorded, but the example is red.
-    local crashed=0 rss_kib="" peak_rss_kib=""
-    kill -0 "${launcher}" 2>/dev/null || crashed=1
-    if [[ -r /proc/${launcher}/status ]]; then
-        rss_kib=$(awk '/^VmRSS/{print $2}' "/proc/${launcher}/status")
-        peak_rss_kib=$(awk '/^VmHWM/{print $2}' "/proc/${launcher}/status")
+    local crashed=0 rss_kib="" peak_rss_kib="" inferior=""
+    inferior=$(pgrep -P "${launcher}" | head -1 || true)
+    if [[ -n ${inferior} ]]; then
+        # Under gdb a crashed inferior is ptrace-stopped (t/T), not dead --
+        # kill -0 alone would miss it. Treat stopped/zombie as crashed.
+        local istate
+        istate=$(ps -o stat= -p "${inferior}" 2>/dev/null | tr -d ' ')
+        [[ -z ${istate} || ${istate} == [TtZ]* ]] && crashed=1
+        kill -0 "${inferior}" 2>/dev/null || crashed=1
+        if [[ -r /proc/${inferior}/status ]]; then
+            rss_kib=$(awk '/^VmRSS/{print $2}' "/proc/${inferior}/status")
+            peak_rss_kib=$(awk '/^VmHWM/{print $2}' "/proc/${inferior}/status")
+        fi
+    else
+        kill -0 "${launcher}" 2>/dev/null || crashed=1
     fi
     stop_launcher "${launcher}"
     record_metric "${name}" "${binary_bytes}" "${rss_kib}" "${peak_rss_kib}" \
