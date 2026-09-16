@@ -77,9 +77,9 @@ jobs:
       - name: Emit the runnable example matrix
         id: list
         run: |
-          comm -23 \
-            <(./.github/scripts/discover-examples.sh | sort) \
-            <(grep -E '^\s*[^#[:space:]]' e2e/skip.txt | awk '{print $1}' | sort) \
+          # Diagnostic branch only: only the two examples carrying open crash
+          # issues run; production coverage is unchanged on real branches.
+          printf 'filter\nstress\n' \
             | tee /dev/stderr \
             | jq -Rnc '{example: [inputs]}' > /tmp/matrix.json
           echo "matrix=$(cat /tmp/matrix.json)" >> "$GITHUB_OUTPUT"
@@ -128,6 +128,10 @@ jobs:
         working-directory: waterui/examples/gallery
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/e2e-target
+          # Diagnostic branch only: match the per-example script's unstripped,
+          # line-tabled profile overrides so the warm dep graph is reused.
+          CARGO_PROFILE_RELEASE_DEBUG: "1"
+          CARGO_PROFILE_RELEASE_STRIP: none
         run: |
           export PATH="${{ github.workspace }}/cli-bin/bin:$PATH"
           water package --platform linux --backend gtk4 --release --yes

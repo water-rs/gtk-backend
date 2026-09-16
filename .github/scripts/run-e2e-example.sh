@@ -132,6 +132,13 @@ run_example() {
     cd "${waterui_dir}/examples/${name}" || return 1
     : >"${log}"
 
+    # Diagnostic branch only: generated manifests strip the release binary
+    # ([profile.release] strip="symbols", debug off), which is why packaged
+    # crashes arrive as ?? frames. Keep line tables and the symbol table so
+    # gdb resolves Rust frames; opt-level/LTO/codegen-units/panic stay at the
+    # production values so the binary keeps ship timing.
+    export CARGO_PROFILE_RELEASE_DEBUG=1
+    export CARGO_PROFILE_RELEASE_STRIP=none
     # Packaging produces the same binary a user would run; measuring it keeps
     # size/RSS/startup honest instead of reporting debug-profile numbers.
     if ! timeout "${PACKAGE_DEADLINE}" water package --platform linux --backend gtk4 --release --yes >>"${log}" 2>&1; then
@@ -162,10 +169,17 @@ run_example() {
         WATERUI_GTK_LAYOUT_DEBUG=1 \
         setsid gdb -batch \
             -ex 'run' \
-            -ex 'echo \n=== STOP BACKTRACE ===\n' \
-            -ex 'bt' \
-            -ex 'thread apply all bt' \
-            -ex 'info registers' \
+            -ex 'python
+import gdb
+# Required evidence first; an unmapped $pc can make disassembly fail, so the
+# optional probes run last and every command is individually error-isolated.
+for cmd in ["p/x $_siginfo", "info registers", "info proc mappings", "bt 40", "thread apply all bt", "info sharedlibrary", "disassemble $pc-32,$pc+16", "info symbol $rax"]:
+    print("\n=== %s ===" % cmd)
+    try:
+        gdb.execute(cmd)
+    except gdb.error as e:
+        print("probe failed:", e)
+end' \
             -ex 'quit' \
             --args "${bin}" >>"${log}" 2>&1 &
     launcher=$!
