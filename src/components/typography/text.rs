@@ -301,8 +301,9 @@ fn escape_markup_attr(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use nami::Computed;
-    use waterui::theme::install_color_signal;
+    use waterui::theme::{install_color_signal, install_font_signal};
     use waterui_graphics::color::{Color, Srgb};
+    use waterui_text::font::{Body, FontSlot};
 
     use super::*;
 
@@ -314,8 +315,17 @@ mod tests {
         ResolvedColor::from_srgb(Srgb::new_u8(red, green, blue)).with_opacity(alpha)
     }
 
-    fn env_with_foreground(color: ResolvedColor) -> Environment {
+    /// A minimal faithful environment: `Style::default().font` resolves the
+    /// `Body` slot and panics when no font signal is installed, so tests get
+    /// the same default the theme installs (`theme::install_fonts`).
+    fn test_env() -> Environment {
         let mut env = Environment::new();
+        install_font_signal::<Body>(&mut env, Computed::constant(Body::DEFAULT));
+        env
+    }
+
+    fn env_with_foreground(color: ResolvedColor) -> Environment {
+        let mut env = test_env();
         install_color_signal::<Foreground>(&mut env, Computed::constant(color));
         env
     }
@@ -331,22 +341,65 @@ mod tests {
             .expect("Native<TextConfig> renders a Label")
     }
 
+    /// Parses the generated markup with the real Pango parser and returns the
+    /// first attribute of `ty`, proving the emitted attributes are not only
+    /// syntactically valid but land on the intended attribute type.
+    fn parsed_attr(markup: &str, ty: gtk4::pango::AttrType) -> Option<gtk4::pango::Attribute> {
+        let (attrs, _, _) = gtk4::pango::parse_markup(markup, '\0')
+            .expect("generated markup must parse through Pango");
+        attrs
+            .iterator()
+            .attrs()
+            .into_iter()
+            .find(|attr| attr.type_() == ty)
+    }
+
+    fn parsed_rgb(markup: &str, ty: gtk4::pango::AttrType) -> Option<(u16, u16, u16)> {
+        let attr = parsed_attr(markup, ty)?;
+        let color = attr
+            .downcast_ref::<gtk4::pango::AttrColor>()
+            .expect("color attribute")
+            .color();
+        Some((color.red(), color.green(), color.blue()))
+    }
+
+    fn parsed_int(markup: &str, ty: gtk4::pango::AttrType) -> Option<i32> {
+        parsed_attr(markup, ty).map(|attr| {
+            attr.downcast_ref::<gtk4::pango::AttrInt>()
+                .expect("integer attribute")
+                .value()
+        })
+    }
+
     #[test]
     fn environment_foreground_reaches_unstyled_chunks() {
         let env = env_with_foreground(resolved_u8(255, 255, 255, 1.0));
         let markup = styled_to_markup(StyledStr::from("body"), &env, true);
-        assert!(markup.contains("foreground=\"#FFFFFF\""), "{markup}");
+        assert_eq!(
+            parsed_rgb(&markup, gtk4::pango::AttrType::Foreground),
+            Some((0xFFFF, 0xFFFF, 0xFFFF))
+        );
+        assert_eq!(
+            parsed_int(&markup, gtk4::pango::AttrType::ForegroundAlpha),
+            None
+        );
     }
 
     #[test]
     fn environment_foreground_preserves_alpha() {
         let env = env_with_foreground(resolved_u8(255, 255, 255, 0.5));
         let markup = styled_to_markup(StyledStr::from("body"), &env, true);
-        assert!(markup.contains("foreground_alpha=\"32768\""), "{markup}");
+        assert_eq!(
+            parsed_int(&markup, gtk4::pango::AttrType::ForegroundAlpha),
+            Some(32768)
+        );
 
         let env = env_with_foreground(resolved_u8(255, 255, 255, 0.0));
         let markup = styled_to_markup(StyledStr::from("body"), &env, true);
-        assert!(markup.contains("foreground_alpha=\"0\""), "{markup}");
+        assert_eq!(
+            parsed_int(&markup, gtk4::pango::AttrType::ForegroundAlpha),
+            Some(0)
+        );
     }
 
     #[test]
@@ -358,22 +411,33 @@ mod tests {
             Style::default().foreground(Color::new(resolved_u8(255, 0, 0, 0.25))),
         );
         let markup = styled_to_markup(content, &env, true);
-        assert!(markup.contains("foreground=\"#FF0000\""), "{markup}");
-        assert!(markup.contains("foreground_alpha=\"16384\""), "{markup}");
-        assert!(!markup.contains("FFFFFF"), "{markup}");
+        assert_eq!(
+            parsed_rgb(&markup, gtk4::pango::AttrType::Foreground),
+            Some((0xFFFF, 0, 0))
+        );
+        assert_eq!(
+            parsed_int(&markup, gtk4::pango::AttrType::ForegroundAlpha),
+            Some(16384)
+        );
     }
 
     #[test]
     fn explicit_span_background_preserves_alpha() {
-        let env = Environment::new();
+        let env = test_env();
         let mut content = StyledStr::from("");
         content.push(
             "hi",
             Style::default().background(Color::new(resolved_u8(0, 128, 0, 0.5))),
         );
         let markup = styled_to_markup(content, &env, true);
-        assert!(markup.contains("background=\"#008000\""), "{markup}");
-        assert!(markup.contains("background_alpha=\"32768\""), "{markup}");
+        assert_eq!(
+            parsed_rgb(&markup, gtk4::pango::AttrType::Background),
+            Some((0, 0x8080, 0))
+        );
+        assert_eq!(
+            parsed_int(&markup, gtk4::pango::AttrType::BackgroundAlpha),
+            Some(32768)
+        );
     }
 
     #[test]
@@ -381,8 +445,8 @@ mod tests {
         let env = env_with_foreground(resolved_u8(255, 255, 255, 1.0));
         let sensitive = styled_to_markup(StyledStr::from("body"), &env, true);
         let insensitive = styled_to_markup(StyledStr::from("body"), &env, false);
-        assert!(sensitive.contains("foreground="), "{sensitive}");
-        assert!(!insensitive.contains("foreground="), "{insensitive}");
+        assert!(parsed_attr(&sensitive, gtk4::pango::AttrType::Foreground).is_some());
+        assert!(parsed_attr(&insensitive, gtk4::pango::AttrType::Foreground).is_none());
     }
 
     /// The rendered label paints with the installed `Foreground` while
@@ -393,16 +457,16 @@ mod tests {
         init();
         let env = env_with_foreground(resolved_u8(255, 255, 255, 1.0));
         let label = render_label(&env, "body");
-        assert!(label.label().as_str().contains("foreground=\"#FFFFFF\""));
+        assert!(parsed_attr(&label.label(), gtk4::pango::AttrType::Foreground).is_some());
 
         let parent = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         parent.append(&label);
         parent.set_sensitive(false);
         assert!(label.state_flags().contains(gtk4::StateFlags::INSENSITIVE));
-        assert!(!label.label().as_str().contains("foreground="));
+        assert!(parsed_attr(&label.label(), gtk4::pango::AttrType::Foreground).is_none());
 
         parent.set_sensitive(true);
-        assert!(label.label().as_str().contains("foreground=\"#FFFFFF\""));
+        assert!(parsed_attr(&label.label(), gtk4::pango::AttrType::Foreground).is_some());
     }
 
     /// The watcher guards live in the label's own qdata, so their callbacks
