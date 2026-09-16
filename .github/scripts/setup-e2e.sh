@@ -17,7 +17,13 @@ waterui_ref="${WATERUI_REF:-dev}"
 
 echo "Using waterui ref: ${waterui_ref}"
 rm -rf "${waterui_dir}"
-git clone --depth 1 --branch "${waterui_ref}" https://github.com/water-rs/waterui.git "${waterui_dir}"
+# Fetch by exact SHA: `git clone --branch` cannot check out a raw commit, and
+# this branch pins WATERUI_REF to one. A detached FETCH_HEAD accepts branch
+# names and SHAs alike (the server allows reachable-SHA fetches).
+git init -q "${waterui_dir}"
+git -C "${waterui_dir}" remote add origin https://github.com/water-rs/waterui.git
+git -C "${waterui_dir}" fetch -q --depth 1 origin "${waterui_ref}"
+git -C "${waterui_dir}" checkout -q --detach FETCH_HEAD
 git -C "${waterui_dir}" submodule update --init --depth 1
 
 mkdir -p "${waterui_dir}/backends/gtk"
