@@ -31,160 +31,97 @@ fn asset_origin_serves_the_shared_bundled_site() {
 /// `pushState` and in-page anchors add back-forward entries without ever
 /// emitting `load-changed`, so `NavigationState` must come from the
 /// back-forward list's own `changed` signal. Drives exactly that edge.
+///
+/// The whole body runs on a worker thread under a hard deadline: the 30 s
+/// async timeout inside bounds only work the main context can reach, while a
+/// synchronous native call stalling would hang the suite past it. A stall
+/// must fail fast with whatever the stage markers captured, not run forever.
 #[test]
 fn same_document_history_change_reports_navigation_state() {
-    // SAFETY: same CI sandbox escape as the conformance test above, set before
-    // GTK, WebKit, or any concurrent environment reader starts.
-    unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
-    gtk4::init().expect("WebKitGTK tests require a display");
-    let _inspector = crate::init_main_thread_executors();
-    let controller = waterui_webview::WebViewController::new(crate::webview::GtkWebViewController);
-    let webview = controller.open_with(waterui_webview::WebViewConfig {
-        asset_server: Some(Arc::new(
-            |_request: &waterui_webview::assets::AssetRequest| {
-                waterui_webview::assets::AssetResponse::ok(
-                    "text/html",
-                    b"<title>history</title>".to_vec(),
-                )
-            },
-        )),
-    });
-    let handle = webview.handle().clone();
-    let events = Rc::new(RefCell::new(Vec::<BackendEvent>::new()));
-    let _guard = handle.watch({
-        let events = Rc::clone(&events);
-        move |event| events.borrow_mut().push(event)
-    });
-    glib::MainContext::default()
-        .block_on(glib::future_with_timeout(
-            Duration::from_secs(30),
-            async move {
-                handle
-                    .run_javascript("'installed'")
-                    .await
-                    .expect("the engine evaluates on its initial document");
-                handle.go_to(
-                    &"waterui://localhost/index.html"
-                        .parse()
-                        .expect("the asset entry URL parses"),
-                );
-                loop {
-                    if events
-                        .borrow()
-                        .iter()
-                        .any(|event| matches!(event, BackendEvent::Event(WebViewEvent::Loaded)))
-                    {
-                        break;
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        // SAFETY: same CI sandbox escape as the conformance test above, set
+        // before GTK, WebKit, or any concurrent environment reader starts.
+        unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
+        eprintln!("history: gtk init");
+        gtk4::init().expect("WebKitGTK tests require a display");
+        let _inspector = crate::init_main_thread_executors();
+        let controller =
+            waterui_webview::WebViewController::new(crate::webview::GtkWebViewController);
+        eprintln!("history: opening webview");
+        let webview = controller.open_with(waterui_webview::WebViewConfig {
+            asset_server: Some(Arc::new(
+                |_request: &waterui_webview::assets::AssetRequest| {
+                    waterui_webview::assets::AssetResponse::ok(
+                        "text/html",
+                        b"<title>history</title>".to_vec(),
+                    )
+                },
+            )),
+        });
+        eprintln!("history: webview open");
+        let handle = webview.handle().clone();
+        let events = Rc::new(RefCell::new(Vec::<BackendEvent>::new()));
+        let _guard = handle.watch({
+            let events = Rc::clone(&events);
+            move |event| events.borrow_mut().push(event)
+        });
+        glib::MainContext::default()
+            .block_on(glib::future_with_timeout(
+                Duration::from_secs(30),
+                async move {
+                    handle
+                        .run_javascript("'installed'")
+                        .await
+                        .expect("the engine evaluates on its initial document");
+                    handle.go_to(
+                        &"waterui://localhost/index.html"
+                            .parse()
+                            .expect("the asset entry URL parses"),
+                    );
+                    loop {
+                        if events
+                            .borrow()
+                            .iter()
+                            .any(|event| matches!(event, BackendEvent::Event(WebViewEvent::Loaded)))
+                        {
+                            break;
+                        }
+                        glib::timeout_future(Duration::from_millis(10)).await;
                     }
-                    glib::timeout_future(Duration::from_millis(10)).await;
-                }
-                handle
-                    .call_async_javascript("history.pushState({}, '', '/pushed');")
-                    .await
-                    .expect("pushState succeeds on the asset origin");
-                loop {
-                    if events.borrow().iter().any(|event| {
-                        matches!(
-                            event,
-                            BackendEvent::NavigationState {
-                                can_go_back: true,
-                                ..
-                            }
-                        )
-                    }) {
-                        break;
+                    eprintln!("history: loaded, pushing state");
+                    handle
+                        .call_async_javascript("history.pushState({}, '', '/pushed');")
+                        .await
+                        .expect("pushState succeeds on the asset origin");
+                    eprintln!("history: pushed, waiting for NavigationState");
+                    loop {
+                        if events.borrow().iter().any(|event| {
+                            matches!(
+                                event,
+                                BackendEvent::NavigationState {
+                                    can_go_back: true,
+                                    ..
+                                }
+                            )
+                        }) {
+                            break;
+                        }
+                        glib::timeout_future(Duration::from_millis(10)).await;
                     }
-                    glib::timeout_future(Duration::from_millis(10)).await;
-                }
-            },
-        ))
-        .expect("a same-document history entry must report NavigationState");
-}
-
-/// Temporary diagnostic for the CI-only `fetch('/app.js')` "Load failed"
-/// rejection: reports what the page itself sees — its URL, origin, secure
-/// context flags, and the fetch's exact error — alongside the scheme handler's
-/// own tracing. Removed with the diagnosis.
-#[test]
-fn asset_origin_fetch_diagnostic() {
-    // SAFETY: same CI sandbox escape as the conformance test above, set before
-    // GTK, WebKit, or any concurrent environment reader starts.
-    unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
-    gtk4::init().expect("WebKitGTK tests require a display");
-    let _inspector = crate::init_main_thread_executors();
-    let controller = waterui_webview::WebViewController::new(crate::webview::GtkWebViewController);
-    let webview = controller.open_with(waterui_webview::WebViewConfig {
-        asset_server: Some(Arc::new(
-            |request: &waterui_webview::assets::AssetRequest| {
-                waterui_webview::assets::AssetResponse::ok(
-                    if request.path.as_str() == "/app.js" {
-                        "text/javascript"
-                    } else {
-                        "text/html"
-                    },
-                    b"globalThis.__served = true;".to_vec(),
-                )
-            },
-        )),
+                    eprintln!("history: NavigationState reported");
+                },
+            ))
+            .expect("a same-document history entry must report NavigationState");
+        let _ = done_tx.send(());
     });
-    let handle = webview.handle().clone();
-    let events = Rc::new(RefCell::new(Vec::<BackendEvent>::new()));
-    let _guard = handle.watch({
-        let events = Rc::clone(&events);
-        move |event| {
-            eprintln!("webview event: {event:?}");
-            events.borrow_mut().push(event);
+    match done_rx.recv_timeout(Duration::from_secs(60)) {
+        Ok(()) => {}
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("the same-document history flow stalled past 60 seconds")
         }
-    });
-    glib::MainContext::default()
-        .block_on(glib::future_with_timeout(
-            Duration::from_secs(30),
-            async move {
-                handle
-                    .run_javascript("'installed'")
-                    .await
-                    .expect("the engine evaluates on its initial document");
-                handle.go_to(
-                    &"waterui://localhost/index.html"
-                        .parse()
-                        .expect("the asset entry URL parses"),
-                );
-                loop {
-                    if events
-                        .borrow()
-                        .iter()
-                        .any(|event| matches!(event, BackendEvent::Event(WebViewEvent::Loaded)))
-                    {
-                        break;
-                    }
-                    glib::timeout_future(Duration::from_millis(10)).await;
-                }
-                let page_state = handle
-                    .call_async_javascript(
-                        "return [location.href, location.origin, \
-                         String(isSecureContext), String(crossOriginIsolated)].join('|');",
-                    )
-                    .await
-                    .expect("page state evaluates");
-                eprintln!("page state: {page_state}");
-                let fetched = handle
-                    .call_async_javascript(
-                        "return fetch('/app.js')\
-                            .then((r) => 'OK ' + r.status + ' ' + r.headers.get('content-type'))\
-                            .catch((e) => 'ERR ' + e.name + ': ' + e.message);",
-                    )
-                    .await
-                    .expect("the fetch probe itself resolves");
-                eprintln!("fetch probe: {fetched}");
-                assert!(
-                    page_state.contains("waterui://localhost|true|false"),
-                    "page state: {page_state}"
-                );
-                assert!(
-                    fetched.starts_with("\"OK 200") || fetched.starts_with("OK 200"),
-                    "fetch probe: {fetched}; page state: {page_state}"
-                );
-            },
-        ))
-        .expect("the diagnostic flow must finish inside its timeout");
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("the same-document history flow aborted on its worker thread")
+        }
+    }
 }

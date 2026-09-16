@@ -627,14 +627,6 @@ mod webkitgtk {
             // The scheme is ours but the host is not the asset host.
             None => AssetResponse::not_found(),
         };
-        // Diagnostic tracing for the CI-only fetch failure under investigation;
-        // removed with the diagnosis.
-        eprintln!(
-            "asset scheme request: method={method} uri={uri} -> status={} headers={} body={}B",
-            response.status,
-            response.headers.len(),
-            response.body.len(),
-        );
         finish_scheme_request(request, &response);
     }
 
@@ -2851,9 +2843,6 @@ unsafe extern "C" fn on_load_failed(
     // SAFETY: `error` is the live `GError` WebKit hands this signal; `message`
     // is a valid NUL-terminated string.
     let message = webkitgtk::cstr_to_string(unsafe { (*error).message });
-    // Diagnostic tracing for the CI-only fetch failure under investigation;
-    // removed with the diagnosis.
-    eprintln!("load-failed: {message}");
     data.shared
         .emit(WebViewEvent::Error(WebViewError::LoadFailed(Str::from(
             message,
