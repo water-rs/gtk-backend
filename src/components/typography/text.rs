@@ -7,26 +7,24 @@ use std::fmt::Write;
 use waterui::theme::{color::Foreground, installed_color_signal};
 use waterui_core::layout::HorizontalAlignment;
 use waterui_core::{Environment, Native};
+use waterui_graphics::color::ResolvedColor;
 use waterui_text::TextConfig;
 use waterui_text::font::{FontDesign, FontWeight, ResolvedFont};
 use waterui_text::styled::{Style, StyledStr};
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
-use crate::util::{resolved_color_to_hex, store_watcher_guards};
+use crate::util::{resolved_color_to_hex, resolved_color_to_rgba8, store_watcher_guards};
 
 impl GtkComponent for Native<TextConfig> {
     /// Renders a `WaterUI` Text component as a GTK4 Label.
     fn render(self, env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
         let config = self.into_inner();
+        let content = config.content;
+        let paragraph_alignment = config.paragraph_alignment;
 
         let label = Label::new(None);
-        apply_styled_content(
-            &label,
-            config.content.get(),
-            config.paragraph_alignment.get(),
-            env,
-        );
+        apply_styled_content(&label, content.get(), paragraph_alignment.get(), env);
 
         // Match native behavior: read-only text should not be selection-active by default.
         label.set_selectable(false);
@@ -40,45 +38,56 @@ impl GtkComponent for Native<TextConfig> {
             label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
         }
 
-        // Set up reactive updates
-        let guard = config.content.watch({
-            let label = label.clone();
+        // Set up reactive updates. The watcher guards are stored in the
+        // label's own qdata, so the callbacks must hold the label weakly: a
+        // strong capture would close a reference cycle and keep every text
+        // widget alive until its signals last rather than until it is
+        // released. An `upgrade` that fails means the label is gone and the
+        // update is dropped with it.
+        let mut guards = Vec::new();
+        {
+            let weak_label = label.downgrade();
             let env = env.clone();
-            let paragraph_alignment = config.paragraph_alignment.clone();
-            move |ctx| {
+            let paragraph_alignment = paragraph_alignment.clone();
+            guards.push(content.watch(move |ctx| {
+                let Some(label) = weak_label.upgrade() else {
+                    return;
+                };
                 let content = ctx.into_value();
-                let label = label.clone();
                 let env = env.clone();
                 let alignment = paragraph_alignment.get();
                 // Schedule update on GTK main thread
                 glib::idle_add_local_once(move || {
                     apply_styled_content(&label, content, alignment, &env);
                 });
-            }
-        });
+            }));
+        }
 
-        let alignment_guard = config.paragraph_alignment.watch({
-            let label = label.clone();
-            move |ctx| {
+        {
+            let weak_label = label.downgrade();
+            guards.push(paragraph_alignment.watch(move |ctx| {
+                let Some(label) = weak_label.upgrade() else {
+                    return;
+                };
                 let alignment = ctx.into_value();
-                let label = label.clone();
                 glib::idle_add_local_once(move || {
                     apply_paragraph_alignment(&label, alignment);
                 });
-            }
-        });
+            }));
+        }
 
         // Repaint when the environment `Foreground` token changes: the theme
         // mutates the slot's signal on scheme switches and `.foreground()`
         // overrides install into the same slot.
-        let mut guards = vec![guard, alignment_guard];
         if let Some(foreground) = installed_color_signal::<Foreground>(env) {
-            let label = label.clone();
+            let weak_label = label.downgrade();
             let env = env.clone();
-            let content = config.content.clone();
-            let paragraph_alignment = config.paragraph_alignment.clone();
+            let content = content.clone();
+            let paragraph_alignment = paragraph_alignment.clone();
             guards.push(foreground.watch(move |_ctx| {
-                let label = label.clone();
+                let Some(label) = weak_label.upgrade() else {
+                    return;
+                };
                 let env = env.clone();
                 let content = content.clone();
                 let paragraph_alignment = paragraph_alignment.clone();
@@ -88,6 +97,18 @@ impl GtkComponent for Native<TextConfig> {
             }));
         }
         store_watcher_guards(&label, guards);
+
+        // GTK draws insensitive widgets with the theme's disabled color, which
+        // an emitted `foreground` attribute would mask. `sensitive` is the
+        // effective property — it already includes ancestor sensitivity — so
+        // rebuilding the markup on every flip lets the dimming apply while
+        // the label is insensitive and restores the token when it returns.
+        {
+            let env = env.clone();
+            label.connect_sensitive_notify(move |label| {
+                apply_styled_content(label, content.get(), paragraph_alignment.get(), &env);
+            });
+        }
 
         label.upcast()
     }
@@ -99,7 +120,7 @@ fn apply_styled_content(
     alignment: HorizontalAlignment,
     env: &Environment,
 ) {
-    let markup = styled_to_markup(content, env);
+    let markup = styled_to_markup(content, env, label.is_sensitive());
     label.set_markup(&markup);
     apply_paragraph_alignment(label, alignment);
 }
@@ -117,7 +138,7 @@ fn apply_paragraph_alignment(label: &Label, alignment: HorizontalAlignment) {
     }
 }
 
-fn styled_to_markup(content: StyledStr, env: &Environment) -> String {
+fn styled_to_markup(content: StyledStr, env: &Environment, sensitive: bool) -> String {
     let mut markup = String::new();
 
     for (text, style) in content.into_chunks() {
@@ -126,7 +147,7 @@ fn styled_to_markup(content: StyledStr, env: &Environment) -> String {
             continue;
         }
 
-        let attrs = style_to_markup_attrs(&style, env);
+        let attrs = style_to_markup_attrs(&style, env, sensitive);
         if attrs.is_empty() {
             markup.push_str(&escaped_text);
             continue;
@@ -142,7 +163,7 @@ fn styled_to_markup(content: StyledStr, env: &Environment) -> String {
     markup
 }
 
-fn style_to_markup_attrs(style: &Style, env: &Environment) -> String {
+fn style_to_markup_attrs(style: &Style, env: &Environment, sensitive: bool) -> String {
     let mut attrs = String::new();
     let resolved_font: ResolvedFont = style.font.resolve(env).get();
     let font_size = resolved_font.size.max(1.0);
@@ -183,25 +204,48 @@ fn style_to_markup_attrs(style: &Style, env: &Environment) -> String {
     // `Foreground` is the environment's default text color: the theme installs
     // it from the platform palette and `.foreground()` overrides the same slot,
     // so chunks without an explicit color must still honor it. GTK's CSS knows
-    // nothing of the environment — the resolved color must be emitted. When no
-    // slot is installed at all the label keeps GTK's own default color.
+    // nothing of the environment — the resolved color must be emitted, except
+    // while the label is insensitive: an emitted attribute would mask the
+    // theme's disabled color, exactly like a label whose markup carries no
+    // color at all. When no slot is installed the label keeps GTK's own
+    // default color.
     let foreground = style
         .foreground
         .as_ref()
         .map(|foreground| foreground.resolve(env).get())
-        .or_else(|| installed_color_signal::<Foreground>(env).map(|signal| signal.get()));
+        .or_else(|| {
+            if sensitive {
+                installed_color_signal::<Foreground>(env).map(|signal| signal.get())
+            } else {
+                None
+            }
+        });
     if let Some(foreground) = foreground {
-        let color = resolved_color_to_hex(foreground);
-        let _ = write!(attrs, " foreground=\"{color}\"");
+        emit_color_attrs(&mut attrs, "foreground", foreground);
     }
 
     if let Some(background) = &style.background {
-        let resolved = background.resolve(env).get();
-        let color = resolved_color_to_hex(resolved);
-        let _ = write!(attrs, " background=\"{color}\"");
+        emit_color_attrs(&mut attrs, "background", background.resolve(env).get());
     }
 
     attrs
+}
+
+/// Emits a Pango color attribute pair. Pango markup carries opacity as a
+/// separate `name_alpha` attribute — writing only the color would silently
+/// render a partial or fully transparent color opaque.
+fn emit_color_attrs(attrs: &mut String, name: &str, color: ResolvedColor) {
+    let (_, _, _, alpha) = resolved_color_to_rgba8(color);
+    let _ = write!(attrs, " {name}=\"{}\"", resolved_color_to_hex(color));
+    if alpha < 1.0 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the alpha channel is clamped to [0.0, 1.0] before scaling"
+        )]
+        let alpha = (alpha * 65535.0).round() as u32;
+        let _ = write!(attrs, " {name}_alpha=\"{alpha}\"");
+    }
 }
 
 const fn font_weight_to_pango_value(weight: FontWeight) -> u16 {
@@ -244,4 +288,125 @@ fn escape_markup_attr(value: &str) -> String {
         }
     }
     escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::Computed;
+    use waterui::theme::install_color_signal;
+    use waterui_graphics::color::Color;
+
+    use super::*;
+
+    fn init() {
+        gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
+    }
+
+    fn env_with_foreground(color: ResolvedColor) -> Environment {
+        let mut env = Environment::new();
+        install_color_signal::<Foreground>(&mut env, Computed::constant(color));
+        env
+    }
+
+    fn render_label(env: &Environment, content: &str) -> Label {
+        let mut renderer = GtkRenderer::new();
+        let widget = Native::new(TextConfig::new(Computed::constant(StyledStr::from(
+            String::from(content),
+        ))))
+        .render(env, &mut renderer);
+        widget
+            .downcast::<Label>()
+            .expect("Native<TextConfig> renders a Label")
+    }
+
+    #[test]
+    fn environment_foreground_reaches_unstyled_chunks() {
+        let env = env_with_foreground(ResolvedColor::srgb(255, 255, 255));
+        let markup = styled_to_markup(StyledStr::from("body"), &env, true);
+        assert!(markup.contains("foreground=\"#FFFFFF\""), "{markup}");
+    }
+
+    #[test]
+    fn environment_foreground_preserves_alpha() {
+        let env = env_with_foreground(ResolvedColor::srgb(255, 255, 255).with_opacity(0.5));
+        let markup = styled_to_markup(StyledStr::from("body"), &env, true);
+        assert!(markup.contains("foreground_alpha=\"32768\""), "{markup}");
+
+        let env = env_with_foreground(ResolvedColor::srgb(255, 255, 255).with_opacity(0.0));
+        let markup = styled_to_markup(StyledStr::from("body"), &env, true);
+        assert!(markup.contains("foreground_alpha=\"0\""), "{markup}");
+    }
+
+    #[test]
+    fn explicit_span_foreground_keeps_precedence_and_alpha() {
+        let env = env_with_foreground(ResolvedColor::srgb(255, 255, 255));
+        let mut content = StyledStr::from("");
+        content.push(
+            "hi",
+            Style::default().foreground(Color::new(
+                ResolvedColor::srgb(255, 0, 0).with_opacity(0.25),
+            )),
+        );
+        let markup = styled_to_markup(content, &env, true);
+        assert!(markup.contains("foreground=\"#FF0000\""), "{markup}");
+        assert!(markup.contains("foreground_alpha=\"16384\""), "{markup}");
+        assert!(!markup.contains("FFFFFF"), "{markup}");
+    }
+
+    #[test]
+    fn explicit_span_background_preserves_alpha() {
+        let env = Environment::new();
+        let mut content = StyledStr::from("");
+        content.push(
+            "hi",
+            Style::default()
+                .background(Color::new(ResolvedColor::srgb(0, 128, 0).with_opacity(0.5))),
+        );
+        let markup = styled_to_markup(content, &env, true);
+        assert!(markup.contains("background=\"#008000\""), "{markup}");
+        assert!(markup.contains("background_alpha=\"32768\""), "{markup}");
+    }
+
+    #[test]
+    fn insensitive_label_drops_environment_foreground() {
+        let env = env_with_foreground(ResolvedColor::srgb(255, 255, 255));
+        let sensitive = styled_to_markup(StyledStr::from("body"), &env, true);
+        let insensitive = styled_to_markup(StyledStr::from("body"), &env, false);
+        assert!(sensitive.contains("foreground="), "{sensitive}");
+        assert!(!insensitive.contains("foreground="), "{insensitive}");
+    }
+
+    /// The rendered label paints with the installed `Foreground` while
+    /// sensitive and falls back to GTK's disabled styling while insensitive —
+    /// including when an ancestor, not the label itself, is the disabled one.
+    #[test]
+    fn rendered_label_follows_effective_sensitivity() {
+        init();
+        let env = env_with_foreground(ResolvedColor::srgb(255, 255, 255));
+        let label = render_label(&env, "body");
+        assert!(label.label().as_str().contains("foreground=\"#FFFFFF\""));
+
+        let parent = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        parent.append(&label);
+        parent.set_sensitive(false);
+        assert!(!label.is_sensitive());
+        assert!(!label.label().as_str().contains("foreground="));
+
+        parent.set_sensitive(true);
+        assert!(label.label().as_str().contains("foreground=\"#FFFFFF\""));
+    }
+
+    /// The watcher guards live in the label's own qdata, so their callbacks
+    /// must not hold the label strongly — otherwise every text widget leaks
+    /// through a reference cycle. Releasing the widget must free it.
+    #[test]
+    fn label_is_released_with_its_watchers() {
+        init();
+        let env = env_with_foreground(ResolvedColor::srgb(255, 255, 255));
+        let label = render_label(&env, "body");
+        let weak = label.downgrade();
+        drop(label);
+        while glib::MainContext::default().iteration(false) {}
+        assert!(weak.upgrade().is_none());
+    }
 }
