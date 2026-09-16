@@ -363,6 +363,9 @@ mod imp {
         /// Bumped on unrealize; in-flight async work created against a dead
         /// context observes it and discards its result.
         pub generation: u64,
+        /// Count of filtered frames this host has appended to its snapshot;
+        /// the e2e readiness gate sequences per-host presentation events.
+        pub presented_frames: u64,
         /// Owns the GL runtime libraries behind every entry point the glow
         /// context and the wgpu objects above call through — including on
         /// drop, where device teardown runs glDelete*. Declared last so the
@@ -395,6 +398,7 @@ mod imp {
                     frame_clock: EffectFrameClock::new(),
                     generation: 0,
                     gl_resolver: None,
+                    presented_frames: 0,
                 })),
             }
         }
@@ -421,6 +425,10 @@ impl FilteredHost {
 /// Builds the filtered-container widget hosting `content`.
 pub fn render_applied_filter(mut filter: AppliedFilter, content: Widget) -> Widget {
     let host = FilteredHost::new();
+    tracing::debug!(
+        "[gtk-filter] create filter host host_id={}",
+        host.as_ptr() as usize
+    );
     content.set_parent(&host);
     // The host is transparent to layout — its measure and allocation pass the
     // content through untouched — so every layout channel reads through to
@@ -511,6 +519,13 @@ impl imp::FilteredHost {
         if let Some(texture) = presented {
             let rect = graphene::Rect::new(0.0, 0.0, obj.width() as f32, obj.height() as f32);
             snapshot.append_texture(&texture, &rect);
+            let mut state = self.state.borrow_mut();
+            state.presented_frames += 1;
+            tracing::debug!(
+                "[gtk-filter] filtered frame presented host_id={} seq={}",
+                obj.as_ptr() as usize,
+                state.presented_frames
+            );
         }
         if needs_redraw {
             obj.queue_draw();
