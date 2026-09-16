@@ -17,7 +17,13 @@ waterui_ref="${WATERUI_REF:-dev}"
 
 echo "Using waterui ref: ${waterui_ref}"
 rm -rf "${waterui_dir}"
-git clone --depth 1 --branch "${waterui_ref}" https://github.com/water-rs/waterui.git "${waterui_dir}"
+# Fetch by exact SHA: `git clone --branch` cannot check out a raw commit, and
+# this validation ref pins WATERUI_REF to one. A detached FETCH_HEAD accepts
+# branch names and SHAs alike (the server allows reachable-SHA fetches).
+git init -q "${waterui_dir}"
+git -C "${waterui_dir}" remote add origin https://github.com/water-rs/waterui.git
+git -C "${waterui_dir}" fetch -q --depth 1 origin "${waterui_ref}"
+git -C "${waterui_dir}" checkout -q --detach FETCH_HEAD
 git -C "${waterui_dir}" submodule update --init --depth 1
 
 mkdir -p "${waterui_dir}/backends/gtk"
@@ -47,7 +53,7 @@ EOF
 # the latest code, so pin it to the map-gpu dev head resolved at run time —
 # the same "exact commit on dev" mechanism used for unreleased work
 # everywhere else.
-map_gpu_rev=$(git ls-remote https://github.com/water-rs/map-gpu.git dev | cut -f1)
+map_gpu_rev="${MAP_GPU_REV:-$(git ls-remote https://github.com/water-rs/map-gpu.git dev | cut -f1)}"
 if [[ -z ${map_gpu_rev} ]]; then
     echo "could not resolve water-rs/map-gpu dev head" >&2
     exit 1

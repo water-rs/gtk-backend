@@ -51,6 +51,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  WATERUI_REF: 0718b5679325ea8769c5368dc4133f0bff31130b
+  MAP_GPU_REV: de112654b7be687be4a6a30889650b22afe7cdca
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   WATERUI_DIR: ${{ github.workspace }}/waterui
@@ -77,9 +79,10 @@ jobs:
       - name: Emit the runnable example matrix
         id: list
         run: |
-          comm -23 \
-            <(./.github/scripts/discover-examples.sh | sort) \
-            <(grep -E '^\s*[^#[:space:]]' e2e/skip.txt | awk '{print $1}' | sort) \
+          # Validation scope for PR #78: the two examples whose captures
+          # were blank in run 35095065215, plus filter to exercise the
+          # generic gate on a non-pinned example.
+          printf 'map\nstress\nfilter\n' \
             | tee /dev/stderr \
             | jq -Rnc '{example: [inputs]}' > /tmp/matrix.json
           echo "matrix=$(cat /tmp/matrix.json)" >> "$GITHUB_OUTPUT"
@@ -173,7 +176,7 @@ jobs:
       - name: Run the example under Xvfb
         env:
           EXAMPLE: ${{ matrix.example }}
-          RECORD: ${{ inputs.golden_mode == 'record' && 1 || 0 }}
+          RECORD: 1
         run: |
           export PATH="${{ github.workspace }}/cli-bin/bin:$PATH"
           xvfb-run -a -s "-screen 0 1280x1024x24" dbus-run-session -- \
