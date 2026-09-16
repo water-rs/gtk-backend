@@ -54,6 +54,9 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   WATERUI_DIR: ${{ github.workspace }}/waterui
+  # Throwaway branch: the exact waterui commit under test (pre-merge #990
+  # head); setup-e2e.sh fetches it via init/fetch/checkout --detach.
+  WATERUI_REF: 24cb7bd20477b656b0c80331e50101ed75825b96
   EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
   SHOTS_DIR: ${{ github.workspace }}/e2e-shots
   RECORD_DIR: ${{ github.workspace }}/e2e-candidates
