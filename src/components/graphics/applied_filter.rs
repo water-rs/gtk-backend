@@ -31,7 +31,7 @@ use gtk4::{Orientation, Widget};
 use waterui_graphics::gpu_surface::WgslModuleCache;
 use waterui_graphics::{AppliedFilter, EffectContext, EffectFrameClock, EffectInput, EffectOutput};
 
-use super::gl_util::{make_gl_loader, texture_format_desc};
+use super::gl_util::{GlProcResolver, make_gl_resolver, texture_format_desc};
 
 #[cfg(not(target_os = "linux"))]
 compile_error!(
@@ -171,6 +171,13 @@ pin_project_lite::pin_project! {
         context: gdk4::GLContext,
         #[pin]
         future: F,
+        /// Keeps the GL runtime libraries behind the entry points the
+        /// future's captured wgpu objects call mapped until the future —
+        /// and everything it owns — has dropped. A device request or filter
+        /// setup polled after `init_wgpu`/`init_filter` returned otherwise
+        /// jumps into code `dlclose` already unmapped (the nightly filter
+        /// crash). Declared last so it is the last field dropped.
+        _gl_resolver: Rc<GlProcResolver>,
     }
 }
 
@@ -356,6 +363,13 @@ mod imp {
         /// Bumped on unrealize; in-flight async work created against a dead
         /// context observes it and discards its result.
         pub generation: u64,
+        /// Owns the GL runtime libraries behind every entry point the glow
+        /// context and the wgpu objects above call through — including on
+        /// drop, where device teardown runs glDelete*. Declared last so the
+        /// libraries stay mapped until all consumers are gone; it is
+        /// context-independent, so `unrealize` leaves it in place and the
+        /// next `init_wgpu` replaces it.
+        pub gl_resolver: Option<Rc<GlProcResolver>>,
     }
 
     impl Default for FilteredHost {
@@ -380,6 +394,7 @@ mod imp {
                     presented: None,
                     frame_clock: EffectFrameClock::new(),
                     generation: 0,
+                    gl_resolver: None,
                 })),
             }
         }
@@ -534,15 +549,21 @@ impl imp::FilteredHost {
             }
         }
 
-        let mut loader = make_gl_loader(gl_context);
+        let resolver = Rc::new(make_gl_resolver(gl_context));
         // SAFETY: `gl_context` is current (callers run right after
-        // `make_current`), and the loader resolves symbols from the platform
-        // GL runtime libraries GDK already loaded.
-        let glow_context = Rc::new(unsafe { glow::Context::from_loader_function(|s| loader(s)) });
+        // `make_current`); the resolver keeps the GL runtime libraries the
+        // resolved entry points live in mapped for the lifetime of every
+        // consumer — it is stored in `FilterState` and moved into the
+        // device-request task below, so no consumer outlives it.
+        let glow_context =
+            Rc::new(unsafe { glow::Context::from_loader_function(|s| resolver.load(s)) });
         // SAFETY: same current-context requirement as above; `new_external`
         // probes the context while it is current.
         let exposed = unsafe {
-            wgpu::hal::gles::Adapter::new_external(|s| loader(s), wgpu::GlBackendOptions::default())
+            wgpu::hal::gles::Adapter::new_external(
+                |s| resolver.load(s),
+                wgpu::GlBackendOptions::default(),
+            )
         }
         .unwrap_or_else(|| panic!("AppliedFilter: wgpu-hal failed to create external adapter"));
 
@@ -570,6 +591,7 @@ impl imp::FilteredHost {
             state.wgpu_instance = Some(instance);
             state.wgpu_adapter = Some(adapter.clone());
             state.glow = Some(glow_context);
+            state.gl_resolver = Some(Rc::clone(&resolver));
             state.setup_phase = SetupPhase::RequestingDevice;
         }
 
@@ -578,6 +600,7 @@ impl imp::FilteredHost {
         let imp_state = Rc::clone(&self.state);
         glib::MainContext::default().spawn_local(WithGlContextCurrent {
             context: gl_context.clone(),
+            _gl_resolver: resolver,
             future: async move {
                 let result = adapter.request_device(&device_descriptor).await;
                 {
@@ -610,20 +633,27 @@ impl imp::FilteredHost {
     /// Runs `AppliedFilter::setup` once the device exists, with the context
     /// made current on every poll.
     fn init_filter(&self, gl_context: &gdk4::GLContext) {
-        let (device, queue, mut filter, shader_cache) = {
+        let (device, queue, mut filter, shader_cache, gl_resolver) = {
             let mut state = self.state.borrow_mut();
             if state.setup_phase != SetupPhase::Idle {
                 return;
             }
-            let (Some(device), Some(queue), Some(filter)) = (
+            let (Some(device), Some(queue), Some(gl_resolver), Some(filter)) = (
                 state.wgpu_device.clone(),
                 state.wgpu_queue.clone(),
+                state.gl_resolver.clone(),
                 state.filter.take(),
             ) else {
                 return;
             };
             state.setup_phase = SetupPhase::RequestingFilter;
-            (device, queue, filter, Arc::clone(&state.shader_cache))
+            (
+                device,
+                queue,
+                filter,
+                Arc::clone(&state.shader_cache),
+                gl_resolver,
+            )
         };
 
         let generation = self.state.borrow().generation;
@@ -631,6 +661,7 @@ impl imp::FilteredHost {
         let imp_state = Rc::clone(&self.state);
         glib::MainContext::default().spawn_local(WithGlContextCurrent {
             context: gl_context.clone(),
+            _gl_resolver: gl_resolver,
             future: async move {
                 let context = EffectContext {
                     device: &device,
