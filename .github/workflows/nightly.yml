@@ -54,6 +54,9 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   WATERUI_DIR: ${{ github.workspace }}/waterui
+  # Throwaway branch: the exact waterui commit under test (merged #990 head);
+  # setup-e2e.sh fetches it via init/fetch/checkout --detach.
+  WATERUI_REF: 0718b5679325ea8769c5368dc4133f0bff31130b
   EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
   SHOTS_DIR: ${{ github.workspace }}/e2e-shots
   RECORD_DIR: ${{ github.workspace }}/e2e-candidates
@@ -77,9 +80,9 @@ jobs:
       - name: Emit the runnable example matrix
         id: list
         run: |
-          comm -23 \
-            <(./.github/scripts/discover-examples.sh | sort) \
-            <(grep -E '^\s*[^#[:space:]]' e2e/skip.txt | awk '{print $1}' | sort) \
+          # Throwaway validation matrix: gradient only — the Foreground-token
+          # fix's white overlay titles on the now-rendering mesh gradient.
+          printf 'gradient\n' \
             | tee /dev/stderr \
             | jq -Rnc '{example: [inputs]}' > /tmp/matrix.json
           echo "matrix=$(cat /tmp/matrix.json)" >> "$GITHUB_OUTPUT"
