@@ -208,12 +208,12 @@ pin_project_lite::pin_project! {
         area: gtk4::GLArea,
         #[pin]
         future: F,
-        /// Keeps the GL runtime libraries behind the entry points the
-        /// future's captured wgpu objects call mapped until the future —
-        /// and everything it owns — has dropped. A device request or setup
-        /// pass polled after `init_wgpu_if_needed` returned otherwise jumps
-        /// into code `dlclose` already unmapped. Declared last so it is the
-        /// last field dropped.
+        // Keeps the GL runtime libraries behind the entry points the
+        // future's captured wgpu objects call mapped until the future —
+        // and everything it owns — has dropped. A device request or setup
+        // pass polled after `init_wgpu_if_needed` returned otherwise jumps
+        // into code `dlclose` already unmapped. Declared last so it is the
+        // last field dropped.
         _gl_resolver: Rc<GlProcResolver>,
     }
 }
