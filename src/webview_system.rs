@@ -156,7 +156,12 @@ mod webkitgtk {
     }
 
     #[repr(C)]
-    pub struct WebKitWebsiteDataManager {
+    pub struct WebKitNetworkSession {
+        _private: [u8; 0],
+    }
+
+    #[repr(C)]
+    pub struct WebKitSettings {
         _private: [u8; 0],
     }
 
@@ -234,14 +239,12 @@ mod webkitgtk {
         fn webkit_web_view_get_user_content_manager(
             web_view: *mut WebKitWebView,
         ) -> *mut WebKitUserContentManager;
-        fn webkit_web_view_set_custom_user_agent(
-            web_view: *mut WebKitWebView,
-            user_agent: *const c_char,
-        );
+        fn webkit_web_view_get_settings(web_view: *mut WebKitWebView) -> *mut WebKitSettings;
+        fn webkit_settings_set_user_agent(settings: *mut WebKitSettings, user_agent: *const c_char);
         fn webkit_web_view_get_uri(web_view: *mut WebKitWebView) -> *const c_char;
-        fn webkit_web_view_get_website_data_manager(
+        fn webkit_web_view_get_network_session(
             web_view: *mut WebKitWebView,
-        ) -> *mut WebKitWebsiteDataManager;
+        ) -> *mut WebKitNetworkSession;
         fn webkit_web_view_evaluate_javascript(
             web_view: *mut WebKitWebView,
             script: *const c_char,
@@ -316,8 +319,8 @@ mod webkitgtk {
 
     #[link(name = "webkitgtk-6.0")]
     unsafe extern "C" {
-        fn webkit_website_data_manager_get_cookie_manager(
-            data_manager: *mut WebKitWebsiteDataManager,
+        fn webkit_network_session_get_cookie_manager(
+            session: *mut WebKitNetworkSession,
         ) -> *mut WebKitCookieManager;
         fn webkit_cookie_manager_add_cookie(
             manager: *mut WebKitCookieManager,
@@ -453,15 +456,15 @@ mod webkitgtk {
     }
 
     pub(super) fn create_webview(asset_server: Option<AssetServer>) -> WebViewParts {
-        let ptr = match asset_server {
-            Some(server) => create_webview_with_asset_server(server),
-            None => {
+        let ptr = asset_server.map_or_else(
+            || {
                 // SAFETY: `webkit_web_view_new` has no preconditions; a null
                 // return is caught by the `NonNull` wrapper.
                 NonNull::new(unsafe { webkit_web_view_new() })
                     .expect("webkit_web_view_new returned null (fast-fail)")
-            }
-        };
+            },
+            create_webview_with_asset_server,
+        );
 
         // SAFETY: `ptr` is the live `WebKitWebView` just created above.
         let manager =
@@ -469,15 +472,13 @@ mod webkitgtk {
                 .expect("webkit_web_view_get_user_content_manager returned null (fast-fail)");
 
         // SAFETY: `ptr` is the live `WebKitWebView` just created above.
-        let data_manager =
-            NonNull::new(unsafe { webkit_web_view_get_website_data_manager(ptr.as_ptr()) })
-                .expect("webkit_web_view_get_website_data_manager returned null (fast-fail)");
-        // SAFETY: `data_manager` is the live website data manager of the view
-        // created above.
-        let cookie_manager = NonNull::new(unsafe {
-            webkit_website_data_manager_get_cookie_manager(data_manager.as_ptr())
-        })
-        .expect("webkit_website_data_manager_get_cookie_manager returned null (fast-fail)");
+        let session = NonNull::new(unsafe { webkit_web_view_get_network_session(ptr.as_ptr()) })
+            .expect("webkit_web_view_get_network_session returned null (fast-fail)");
+        // SAFETY: `session` is the live network session of the view created
+        // above.
+        let cookie_manager =
+            NonNull::new(unsafe { webkit_network_session_get_cookie_manager(session.as_ptr()) })
+                .expect("webkit_network_session_get_cookie_manager returned null (fast-fail)");
 
         // `webkit_web_view_new` and the `g_object_new` path above both return
         // a *floating* `GInitiallyUnowned` reference. `from_glib_none` is the
@@ -501,7 +502,7 @@ mod webkitgtk {
     /// Builds the view on its own `WebKitWebContext` and registers the
     /// `waterui` asset scheme on it.
     ///
-    /// URI scheme registration is a `WebKitWebContext` facility — WebKitGTK
+    /// URI scheme registration is a `WebKitWebContext` facility — `WebKitGTK`
     /// has no per-view registration — so a view opened with an asset server
     /// gets a dedicated context: the scheme exists only where a server can
     /// answer it, and the context's lifetime owns the server alongside the
@@ -616,7 +617,7 @@ mod webkitgtk {
 
     /// Completes `request` with `response` — status, headers and body.
     ///
-    /// The body is copied into a `GMemoryInputStream` WebKit reads for the
+    /// The body is copied into a `GMemoryInputStream` `WebKit` reads for the
     /// response's life, and the headers become a `SoupMessageHeaders` the
     /// response takes over. The construction references of the stream and the
     /// `WebKitURISchemeResponse` are balanced here.
@@ -765,9 +766,15 @@ mod webkitgtk {
 
     pub(super) fn set_user_agent(ptr: NonNull<WebKitWebView>, user_agent: &str) {
         if let Some(cstr) = cstring(user_agent) {
-            // SAFETY: `ptr` is a live `WebKitWebView`; `cstr` is a live
-            // NUL-terminated string for the duration of the call.
-            unsafe { webkit_web_view_set_custom_user_agent(ptr.as_ptr(), cstr.as_ptr()) };
+            // SAFETY: `ptr` is a live `WebKitWebView`, so its settings object
+            // is live for the call; `cstr` is a live NUL-terminated string
+            // for the duration of the call.
+            unsafe {
+                webkit_settings_set_user_agent(
+                    webkit_web_view_get_settings(ptr.as_ptr()),
+                    cstr.as_ptr(),
+                )
+            };
         }
     }
 

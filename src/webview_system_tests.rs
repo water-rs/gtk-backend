@@ -1,4 +1,4 @@
-//! Native WebKitGTK checks for the shared asset-origin contract.
+//! Native `WebKitGTK` checks for the shared asset-origin contract.
 
 use std::time::Duration;
 
