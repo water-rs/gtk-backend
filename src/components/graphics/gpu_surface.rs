@@ -39,7 +39,7 @@ use waterui_graphics::gpu_surface::{
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::{SceneEngine, SharedSceneRenderer};
 
-use super::gl_util::{make_gl_loader, texture_format_desc};
+use super::gl_util::{GlProcResolver, make_gl_resolver, texture_format_desc};
 use crate::browser_input::{SurfaceInputSink, install as install_surface_input};
 use crate::component::GtkComponent;
 use crate::renderer::{CSS_CLASS_DYNAMIC_RANGE_HDR, CSS_CLASS_DYNAMIC_RANGE_SDR, GtkRenderer};
@@ -120,6 +120,13 @@ struct GpuState {
 
     // Used only for querying framebuffer properties.
     glow: Option<Rc<glow::Context>>,
+    /// Owns the GL runtime libraries behind every entry point the glow
+    /// context and the wgpu objects above call through — including on drop,
+    /// where device teardown runs glDelete*. Declared last so the libraries
+    /// stay mapped until all consumers are gone; it is context-independent,
+    /// so `unrealize` leaves it in place and the next `init_wgpu_if_needed`
+    /// replaces it.
+    gl_resolver: Option<Rc<GlProcResolver>>,
 }
 
 /// The resources every renderer on one GL-adopted device shares.
@@ -178,6 +185,7 @@ impl GpuState {
             redraw_handle: RedrawHandle::new(),
             env,
             glow: None,
+            gl_resolver: None,
         }
     }
 }
@@ -200,6 +208,13 @@ pin_project_lite::pin_project! {
         area: gtk4::GLArea,
         #[pin]
         future: F,
+        // Keeps the GL runtime libraries behind the entry points the
+        // future's captured wgpu objects call mapped until the future —
+        // and everything it owns — has dropped. A device request or setup
+        // pass polled after `init_wgpu_if_needed` returned otherwise jumps
+        // into code `dlclose` already unmapped. Declared last so it is the
+        // last field dropped.
+        _gl_resolver: Rc<GlProcResolver>,
     }
 }
 
@@ -438,13 +453,13 @@ fn init_wgpu_if_needed(
         "creating GTK GpuSurface wgpu device"
     );
 
-    let mut loader = make_gl_loader(gl_ctx);
+    let resolver = Rc::new(make_gl_resolver(gl_ctx));
     // SAFETY: the GLArea's GL context is current (this runs inside the
-    // "render" signal after `make_current`), and the loader resolves symbols
-    // from the platform GL runtime libraries, returning null for unknown
-    // names; glow copies the function pointers here, and the libraries stay
-    // loaded for the process lifetime because GDK's own GL context holds them.
-    let glow = Rc::new(unsafe { glow::Context::from_loader_function(|s| loader(s)) });
+    // "render" signal after `make_current`); the resolver keeps the GL
+    // runtime libraries the resolved entry points live in mapped for the
+    // lifetime of every consumer — it is stored in `GpuState` and moved into
+    // the device-request task below, so no consumer outlives it.
+    let glow = Rc::new(unsafe { glow::Context::from_loader_function(|s| resolver.load(s)) });
     let format = query_framebuffer_format(&glow);
     let (prefers_hdr_explicit, msaa_max_samples) = {
         let st = state.borrow();
@@ -474,10 +489,13 @@ fn init_wgpu_if_needed(
     );
 
     // SAFETY: the GLArea's GL context is current on this thread, which is
-    // what `new_external` requires while it probes the context; the loader
+    // what `new_external` requires while it probes the context; the resolver
     // has the same validity guarantees as for the glow context above.
     let exposed = unsafe {
-        wgpu::hal::gles::Adapter::new_external(|s| loader(s), wgpu::GlBackendOptions::default())
+        wgpu::hal::gles::Adapter::new_external(
+            |s| resolver.load(s),
+            wgpu::GlBackendOptions::default(),
+        )
     }
     .unwrap_or_else(|| panic!("GpuSurface(GL): wgpu-hal failed to create external adapter"));
 
@@ -511,6 +529,7 @@ fn init_wgpu_if_needed(
         st.surface_format = Some(format);
         st.msaa_samples = msaa_samples;
         st.glow = Some(glow);
+        st.gl_resolver = Some(Rc::clone(&resolver));
         st.device_init_in_progress = true;
     }
 
@@ -521,6 +540,7 @@ fn init_wgpu_if_needed(
     let generation = state.borrow().context_generation;
     gtk4::glib::MainContext::default().spawn_local(WithAreaContextCurrent {
         area: area.clone(),
+        _gl_resolver: resolver,
         future: async move {
             let result = adapter_for_task.request_device(&descriptor).await;
             {
@@ -582,6 +602,9 @@ struct SetupInputs {
     env: Environment,
     shader_cache: Arc<WgslModuleCache>,
     scene_renderer: Arc<SharedSceneRenderer>,
+    /// Keeps the GL libraries behind the wgpu objects above mapped while the
+    /// setup task owns them.
+    gl_resolver: Rc<GlProcResolver>,
 }
 
 impl GpuState {
@@ -617,6 +640,10 @@ impl GpuState {
         };
         let shader_cache = Arc::clone(&shared.shader_cache);
         let scene_renderer = Arc::clone(&shared.scene_renderer);
+        let Some(gl_resolver) = self.gl_resolver.clone() else {
+            tracing::debug!("[gtk-gpu] setup_if_needed: missing GL resolver");
+            return None;
+        };
         let Some(gpu_surface) = self.gpu_surface.take() else {
             // A setup task from a torn-down context still owns the surface; it
             // hands it back (with setup_done unset) when it finishes, and the
@@ -636,6 +663,7 @@ impl GpuState {
             env: self.env.clone(),
             shader_cache,
             scene_renderer,
+            gl_resolver,
         })
     }
 }
@@ -668,12 +696,14 @@ fn spawn_renderer_setup(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>, inpu
         mut env,
         shader_cache,
         scene_renderer,
+        gl_resolver,
     } = inputs;
     let state_clone = Rc::clone(state);
     let area_clone = area.clone();
     let generation = state.borrow().context_generation;
     gtk4::glib::MainContext::default().spawn_local(WithAreaContextCurrent {
         area: area.clone(),
+        _gl_resolver: gl_resolver,
         future: async move {
             let ctx = GpuContext::new(
                 &adapter,
