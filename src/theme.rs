@@ -8,9 +8,9 @@ use nami::{Binding, Computed, SignalExt, binding};
 use waterui::theme::{
     ColorScheme,
     color::{
-        Accent, AccentContainer, AccentForeground, Background, Border, Foreground, MutedForeground,
-        SelectionContainer, SelectionForeground, Surface, SurfaceVariant, Tertiary,
-        TertiaryContainer,
+        Accent, AccentContainer, AccentForeground, Background, Border, Error, ErrorForeground,
+        Foreground, MutedForeground, SelectionContainer, SelectionForeground, Surface,
+        SurfaceVariant, Tertiary, TertiaryContainer,
     },
     install_color_scheme, install_color_signal, install_font_signal, installed_color_scheme,
     installed_color_signal,
@@ -35,6 +35,8 @@ struct Palette {
     tertiary_container: Binding<ResolvedColor>,
     selection_container: Binding<ResolvedColor>,
     selection_foreground: Binding<ResolvedColor>,
+    error: Binding<ResolvedColor>,
+    error_foreground: Binding<ResolvedColor>,
 }
 
 /// Installs GTK's named system colors and keeps them synchronized with theme changes.
@@ -54,6 +56,8 @@ pub fn install(env: &mut Environment, widget: &Widget) {
     install_missing::<TertiaryContainer>(env, &palette.tertiary_container);
     install_missing::<SelectionContainer>(env, &palette.selection_container);
     install_missing::<SelectionForeground>(env, &palette.selection_foreground);
+    install_missing::<Error>(env, &palette.error);
+    install_missing::<ErrorForeground>(env, &palette.error_foreground);
 
     if installed_color_scheme(env).is_none() {
         let scheme = binding(system_scheme(&settings));
@@ -100,6 +104,13 @@ impl Palette {
             tertiary_container: binding(with_opacity(accent, 0.2)),
             selection_container: binding(accent),
             selection_foreground: binding(lookup(widget, "theme_selected_fg_color")),
+            // GTK names its destructive emphasis `error_bg_color` (the fill a
+            // badge draws) with `error_fg_color` for content on the fill, so
+            // the pair maps onto Error / ErrorForeground the way
+            // `theme_selected_bg_color` / `theme_selected_fg_color` map onto
+            // the accent pair.
+            error: binding(lookup(widget, "error_bg_color")),
+            error_foreground: binding(lookup(widget, "error_fg_color")),
         }
     }
 
@@ -122,6 +133,8 @@ impl Palette {
         self.selection_container.set(accent);
         self.selection_foreground
             .set(lookup(widget, "theme_selected_fg_color"));
+        self.error.set(lookup(widget, "error_bg_color"));
+        self.error_foreground.set(lookup(widget, "error_fg_color"));
     }
 }
 
