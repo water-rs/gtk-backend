@@ -208,11 +208,14 @@ impl<F: Future> Future for WithAreaContextCurrent<F> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
         let this = self.project();
-        // An unrealized area has no context to make current; the wrapped task
-        // observes the bumped context generation and bails on its own.
-        if this.area.context().is_some() {
-            this.area.make_current();
+        // An unrealized area has no context to make current, and polling the
+        // wrapped task anyway runs its wgpu entry points on no context — UB.
+        // Stay parked; the bumped context generation retires the task's
+        // result on the next render pass.
+        if this.area.context().is_none() {
+            return Poll::Pending;
         }
+        this.area.make_current();
         this.future.poll(cx)
     }
 }

@@ -179,12 +179,15 @@ impl<F: Future> Future for WithGlContextCurrent<F> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
         let this = self.project();
-        // `make_current` needs a live surface; an unrealized widget has none,
-        // and the wrapped task observes the bumped generation and bails on
-        // its own.
-        if DrawContextExt::surface(this.context).is_some() {
-            this.context.make_current();
+        // `make_current` needs a live surface. Once unrealize tears the EGL
+        // context down there is no context to run the wrapped task's GL work
+        // on, and polling it anyway — or dropping it, which runs glDelete* —
+        // is UB. Stay parked; the task's state observes the bumped generation
+        // on the next snapshot instead.
+        if DrawContextExt::surface(this.context).is_none() {
+            return Poll::Pending;
         }
+        this.context.make_current();
         this.future.poll(cx)
     }
 }
@@ -746,6 +749,13 @@ impl imp::FilteredHost {
         let mut pixels = vec![0_u8; stride as usize * gpu.size.height as usize];
         captured.download(&mut pixels, stride as usize);
 
+        // `snapshot_child` lets a nested filter host bind its own GL context,
+        // and `render_texture`/`download` leave the surface's render context
+        // current. Every wgpu call below must run on this host's context —
+        // same share group, so a wrong context produces silently misplaced
+        // writes and corrupted per-context state rather than a clean error.
+        gpu.gl_context.make_current();
+
         let (input_texture, input_view) = {
             let mut state = self.state.borrow_mut();
             let input = CachedTexture::get_or_create(
@@ -788,7 +798,9 @@ impl imp::FilteredHost {
     ) -> bool {
         // The output lives in a GL texture GDK will own, so wgpu renders into
         // a framebuffer wrapped around it rather than a device-created
-        // texture.
+        // texture. Re-assert the owning context first: the capture phase ends
+        // with GDK's render context current.
+        gpu.gl_context.make_current();
         let (output_width, output_height) = {
             let state = self.state.borrow();
             state
