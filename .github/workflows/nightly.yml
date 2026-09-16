@@ -77,9 +77,11 @@ jobs:
       - name: Emit the runnable example matrix
         id: list
         run: |
-          comm -23 \
-            <(./.github/scripts/discover-examples.sh | sort) \
-            <(grep -E '^\s*[^#[:space:]]' e2e/skip.txt | awk '{print $1}' | sort) \
+          # Throwaway validation matrix: issue #44's remaining unverified
+          # examples — gradient (GpuSurface mesh path), animation (CSS
+          # transform / shape-cairo), locale (native text!/Picker),
+          # edge_layout (cairo Shape + native stacks).
+          printf 'gradient\nanimation\nlocale\nedge_layout\n' \
             | tee /dev/stderr \
             | jq -Rnc '{example: [inputs]}' > /tmp/matrix.json
           echo "matrix=$(cat /tmp/matrix.json)" >> "$GITHUB_OUTPUT"
