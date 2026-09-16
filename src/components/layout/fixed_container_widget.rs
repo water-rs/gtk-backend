@@ -687,6 +687,8 @@ mod tests {
             frame: Rect::from_size(Size::new(10.0, 10.0)),
             selected: Rc::new(Cell::new(ProposalSize::UNSPECIFIED)),
             placed: Rc::clone(&inner_placed),
+            probed: Rc::new(RefCell::new(Vec::new())),
+            vertical_guide: None,
         };
         let inner = WuiFixedContainer::new(Box::new(inner_layout), vec![label_child()]);
 
@@ -819,8 +821,8 @@ mod tests {
     fn transparent_wrapper_preserves_raw_probe_and_guides() {
         init();
         let (inner_layout, _) =
-            ProbeLayout::new(10.0, Rc::new(Cell::new(ProposalSize::UNSPECIFIED)))
-                .with_vertical_guide(VerticalAlignment::Center, 12.0);
+            ProbeLayout::new(10.0, Rc::new(Cell::new(ProposalSize::UNSPECIFIED)));
+        let inner_layout = inner_layout.with_vertical_guide(VerticalAlignment::Center, 12.0);
         let probed = inner_layout.probes();
         let inner = WuiFixedContainer::new(Box::new(inner_layout), vec![label_child()]);
         inner.set_margin_top(4);
