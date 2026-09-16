@@ -99,13 +99,18 @@ impl GtkComponent for Native<TextConfig> {
         store_watcher_guards(&label, guards);
 
         // GTK draws insensitive widgets with the theme's disabled color, which
-        // an emitted `foreground` attribute would mask. `sensitive` is the
-        // effective property — it already includes ancestor sensitivity — so
-        // rebuilding the markup on every flip lets the dimming apply while
-        // the label is insensitive and restores the token when it returns.
+        // an emitted `foreground` attribute would mask. The `sensitive`
+        // property only reports the widget's own flag; inherited insensitivity
+        // arrives through the `INSENSITIVE` state flag, so rebuild the markup
+        // on that flag's transitions (hover/focus flips leave it unchanged)
+        // and let the theme dimming apply while the label is insensitive.
         {
             let env = env.clone();
-            label.connect_sensitive_notify(move |label| {
+            label.connect_state_flags_changed(move |label, previous| {
+                let insensitive = label.state_flags().contains(gtk4::StateFlags::INSENSITIVE);
+                if insensitive == previous.contains(gtk4::StateFlags::INSENSITIVE) {
+                    return;
+                }
                 apply_styled_content(label, content.get(), paragraph_alignment.get(), &env);
             });
         }
@@ -120,7 +125,10 @@ fn apply_styled_content(
     alignment: HorizontalAlignment,
     env: &Environment,
 ) {
-    let markup = styled_to_markup(content, env, label.is_sensitive());
+    // `INSENSITIVE` is the flag GTK's disabled styling keys on; it reflects
+    // effective sensitivity including ancestors, unlike `notify::sensitive`.
+    let sensitive = !label.state_flags().contains(gtk4::StateFlags::INSENSITIVE);
+    let markup = styled_to_markup(content, env, sensitive);
     label.set_markup(&markup);
     apply_paragraph_alignment(label, alignment);
 }
@@ -294,12 +302,16 @@ fn escape_markup_attr(value: &str) -> String {
 mod tests {
     use nami::Computed;
     use waterui::theme::install_color_signal;
-    use waterui_graphics::color::Color;
+    use waterui_graphics::color::{Color, Srgb};
 
     use super::*;
 
     fn init() {
         gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
+    }
+
+    fn resolved_u8(red: u8, green: u8, blue: u8, alpha: f32) -> ResolvedColor {
+        ResolvedColor::from_srgb(Srgb::new_u8(red, green, blue)).with_opacity(alpha)
     }
 
     fn env_with_foreground(color: ResolvedColor) -> Environment {
@@ -321,31 +333,29 @@ mod tests {
 
     #[test]
     fn environment_foreground_reaches_unstyled_chunks() {
-        let env = env_with_foreground(ResolvedColor::srgb(255, 255, 255));
+        let env = env_with_foreground(resolved_u8(255, 255, 255, 1.0));
         let markup = styled_to_markup(StyledStr::from("body"), &env, true);
         assert!(markup.contains("foreground=\"#FFFFFF\""), "{markup}");
     }
 
     #[test]
     fn environment_foreground_preserves_alpha() {
-        let env = env_with_foreground(ResolvedColor::srgb(255, 255, 255).with_opacity(0.5));
+        let env = env_with_foreground(resolved_u8(255, 255, 255, 0.5));
         let markup = styled_to_markup(StyledStr::from("body"), &env, true);
         assert!(markup.contains("foreground_alpha=\"32768\""), "{markup}");
 
-        let env = env_with_foreground(ResolvedColor::srgb(255, 255, 255).with_opacity(0.0));
+        let env = env_with_foreground(resolved_u8(255, 255, 255, 0.0));
         let markup = styled_to_markup(StyledStr::from("body"), &env, true);
         assert!(markup.contains("foreground_alpha=\"0\""), "{markup}");
     }
 
     #[test]
     fn explicit_span_foreground_keeps_precedence_and_alpha() {
-        let env = env_with_foreground(ResolvedColor::srgb(255, 255, 255));
+        let env = env_with_foreground(resolved_u8(255, 255, 255, 1.0));
         let mut content = StyledStr::from("");
         content.push(
             "hi",
-            Style::default().foreground(Color::new(
-                ResolvedColor::srgb(255, 0, 0).with_opacity(0.25),
-            )),
+            Style::default().foreground(Color::new(resolved_u8(255, 0, 0, 0.25))),
         );
         let markup = styled_to_markup(content, &env, true);
         assert!(markup.contains("foreground=\"#FF0000\""), "{markup}");
@@ -359,8 +369,7 @@ mod tests {
         let mut content = StyledStr::from("");
         content.push(
             "hi",
-            Style::default()
-                .background(Color::new(ResolvedColor::srgb(0, 128, 0).with_opacity(0.5))),
+            Style::default().background(Color::new(resolved_u8(0, 128, 0, 0.5))),
         );
         let markup = styled_to_markup(content, &env, true);
         assert!(markup.contains("background=\"#008000\""), "{markup}");
@@ -369,7 +378,7 @@ mod tests {
 
     #[test]
     fn insensitive_label_drops_environment_foreground() {
-        let env = env_with_foreground(ResolvedColor::srgb(255, 255, 255));
+        let env = env_with_foreground(resolved_u8(255, 255, 255, 1.0));
         let sensitive = styled_to_markup(StyledStr::from("body"), &env, true);
         let insensitive = styled_to_markup(StyledStr::from("body"), &env, false);
         assert!(sensitive.contains("foreground="), "{sensitive}");
@@ -382,14 +391,14 @@ mod tests {
     #[test]
     fn rendered_label_follows_effective_sensitivity() {
         init();
-        let env = env_with_foreground(ResolvedColor::srgb(255, 255, 255));
+        let env = env_with_foreground(resolved_u8(255, 255, 255, 1.0));
         let label = render_label(&env, "body");
         assert!(label.label().as_str().contains("foreground=\"#FFFFFF\""));
 
         let parent = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         parent.append(&label);
         parent.set_sensitive(false);
-        assert!(!label.is_sensitive());
+        assert!(label.state_flags().contains(gtk4::StateFlags::INSENSITIVE));
         assert!(!label.label().as_str().contains("foreground="));
 
         parent.set_sensitive(true);
@@ -402,7 +411,7 @@ mod tests {
     #[test]
     fn label_is_released_with_its_watchers() {
         init();
-        let env = env_with_foreground(ResolvedColor::srgb(255, 255, 255));
+        let env = env_with_foreground(resolved_u8(255, 255, 255, 1.0));
         let label = render_label(&env, "body");
         let weak = label.downgrade();
         drop(label);
