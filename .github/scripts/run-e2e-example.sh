@@ -8,15 +8,20 @@
 # Readiness is event-driven, not pixel-driven:
 #   * `[gtk-gpu] surface render complete surface_id=N seq=K` is emitted only
 #     after a surface's full render path completed — never at frame entry.
+#   * Identities are the widgets' own pointers (`as_ptr` as usize), stable
+#     for the fixed window this diagnostic runs; no global counters.
 #   * Every created `surface_id`/`host_id` must appear in the completion
 #     stream; set membership, not event counts, is the criterion, so repeated
 #     frames from one widget cannot satisfy the gate.
 #   * Examples may declare a content-readiness pattern (READINESS_PATTERN)
 #     that must be followed, in log order, by a render-complete event — for
 #     `map` that is waterui-map-gpu's own "activated prepared GPU map".
-#   * The deadline failing is an explicit FAIL with the unmet sets; the
-#     bounded final capture is still banked for human review. No pixel
-#     statistic participates in the verdict.
+#   * The deadline failing is an explicit FAIL listing the unresolved ids.
+#     Hidden or offscreen widgets may legitimately never render, so an
+#     unresolved id bounds where to look — it is diagnostic evidence, not
+#     by itself proof of a runtime fault. The bounded final capture is
+#     still banked for human review. No pixel statistic participates in
+#     the verdict.
 #
 # Must run inside an X session with a window manager — GTK4 toplevels only get
 # real focus when a WM is running. The workflow wraps this script in
@@ -236,13 +241,13 @@ run_example() {
     fi
 
     if ((!ready)); then
-        local missing_surfaces missing_hosts detail
-        missing_surfaces=$(comm -23 <(created_surface_ids) <(rendered_surface_ids) | wc -l | tr -d ' ')
-        missing_hosts=$(comm -23 <(created_host_ids) <(presented_host_ids) | wc -l | tr -d ' ')
-        detail="unrendered surfaces=${missing_surfaces} unpresented filter hosts=${missing_hosts}"
+        local unresolved_surfaces unresolved_hosts detail
+        unresolved_surfaces=$(comm -23 <(created_surface_ids) <(rendered_surface_ids) | tr '\n' ' ')
+        unresolved_hosts=$(comm -23 <(created_host_ids) <(presented_host_ids) | tr '\n' ' ')
+        detail="unresolved surface_ids=[${unresolved_surfaces% }] unresolved host_ids=[${unresolved_hosts% }]"
         [[ -n ${READINESS_PATTERN} ]] \
             && detail="${detail}, sequence '${READINESS_PATTERN}' + render-complete unmet"
-        echo "FAIL ${name}: readiness not met within ${SETTLE_DEADLINE}s (${detail})"
+        echo "FAIL ${name}: readiness deadline ${SETTLE_DEADLINE}s reached (${detail})"
         return 1
     fi
 
