@@ -356,7 +356,7 @@ mod webkitgtk {
 
     #[link(name = "webkitgtk-6.0")]
     unsafe extern "C" {
-        fn webkit_web_view_get_type() -> glib::gobject_ffi::GType;
+        fn webkit_web_view_get_type() -> glib::ffi::GType;
         fn webkit_web_context_new() -> *mut WebKitWebContext;
         fn webkit_web_context_register_uri_scheme(
             context: *mut WebKitWebContext,
@@ -439,7 +439,7 @@ mod webkitgtk {
     #[link(name = "gobject-2.0")]
     unsafe extern "C" {
         fn g_object_new(
-            object_type: glib::gobject_ffi::GType,
+            object_type: glib::ffi::GType,
             first_property_name: *const c_char,
             ...
         ) -> *mut c_void;

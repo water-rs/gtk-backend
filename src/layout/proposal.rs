@@ -38,6 +38,16 @@ use crate::layout::subview::measure_view;
 
 const WIDGET_LAYOUT_KEY: &str = "waterui-widget-layout";
 
+/// The live stretch-axis answer a host installs on a widget.
+type AxisProvider = Rc<dyn Fn(&Widget) -> StretchAxis>;
+/// The live layout-priority answer a host installs on a widget.
+type PriorityProvider = Rc<dyn Fn(&Widget) -> i32>;
+/// The raw measurement channel a layout-transparent host installs on a
+/// widget — see `measure_provider` on [`WidgetLayout`] for the contract.
+type MeasureProvider = Rc<dyn Fn(&Widget, ProposalSize, StretchAxis) -> Option<ViewDimensions>>;
+/// What a delivered selected proposal does on a widget.
+type ProposalSink = Rc<dyn Fn(&Widget, ProposalSize)>;
+
 /// What a widget reports to `SubView` queries and does with a delivered
 /// selected proposal. Stored as widget qdata; every field starts empty and
 /// only the parts a host installs ever get used.
@@ -46,13 +56,13 @@ struct WidgetLayout {
     /// Live stretch-axis answer for hosts whose content answer can change
     /// after render — dynamic content, layout containers. Consulted before
     /// `reported_axis`; absent, the recorded declaration stands.
-    axis_provider: RefCell<Option<Rc<dyn Fn(&Widget) -> StretchAxis>>>,
+    axis_provider: RefCell<Option<AxisProvider>>,
     /// The axis the rendered view resolved to at render time, recorded by
     /// `GtkRenderer::render_any_with_axis`.
     reported_axis: Cell<Option<StretchAxis>>,
     /// Live priority for hosts that forward their current child's answer.
     /// Consulted only when `priority` carries no explicit value.
-    priority_provider: RefCell<Option<Rc<dyn Fn(&Widget) -> i32>>>,
+    priority_provider: RefCell<Option<PriorityProvider>>,
     /// The widget's layout priority: `Spacer`'s low default or the
     /// `Metadata<LayoutPriority>` override — the last write wins.
     priority: Cell<Option<i32>>,
@@ -64,10 +74,9 @@ struct WidgetLayout {
     /// or the caller's inherited fallback), handed down as the content's own
     /// claim so it reaches the leaf that means it. A `None` return falls
     /// back to the GTK measure.
-    measure_provider:
-        RefCell<Option<Rc<dyn Fn(&Widget, ProposalSize, StretchAxis) -> Option<ViewDimensions>>>>,
+    measure_provider: RefCell<Option<MeasureProvider>>,
     /// What a delivered selected proposal means to this widget.
-    proposal_sink: RefCell<Option<Rc<dyn Fn(&Widget, ProposalSize)>>>,
+    proposal_sink: RefCell<Option<ProposalSink>>,
     /// The content-box packet last delivered to `proposal_sink`, kept so a
     /// host whose child is replaced can replay the packet still in force.
     retained_proposal: Cell<Option<ProposalSize>>,
@@ -104,7 +113,7 @@ fn ensure_widget_layout(widget: &Widget) -> &WidgetLayout {
 /// bits: `None` never equals `Some`, `Some(0.0)` never equals `Some(-0.0)`,
 /// infinities stay distinct from finite offers, and a NaN proposal compares
 /// equal to itself — the same keying the contract's `MemoizedSubView` uses.
-pub(crate) fn proposals_equal(a: ProposalSize, b: ProposalSize) -> bool {
+pub fn proposals_equal(a: ProposalSize, b: ProposalSize) -> bool {
     a.width.map(f32::to_bits) == b.width.map(f32::to_bits)
         && a.height.map(f32::to_bits) == b.height.map(f32::to_bits)
 }
@@ -113,22 +122,17 @@ pub(crate) fn proposals_equal(a: ProposalSize, b: ProposalSize) -> bool {
 /// ones untouched: `f32::INFINITY` is an unbounded query, not a huge number
 /// to subtract from, and a NaN proposal must survive the trip instead of
 /// collapsing onto `0.0` through `f32::max`.
-pub(crate) fn shrink_extent(extent: Option<f32>, margin: f32) -> Option<f32> {
-    extent.map(|value| {
-        if value.is_finite() {
-            (value - margin).max(0.0)
-        } else {
-            value
-        }
+pub fn shrink_extent(extent: Option<f32>, margin: f32) -> Option<f32> {
+    let value = extent?;
+    Some(if value.is_finite() {
+        (value - margin).max(0.0)
+    } else {
+        value
     })
 }
 
 /// [`shrink_extent`] applied per axis — margin-box to content-box geometry.
-pub(crate) fn shrink_proposal(
-    proposal: ProposalSize,
-    horizontal: f32,
-    vertical: f32,
-) -> ProposalSize {
+pub fn shrink_proposal(proposal: ProposalSize, horizontal: f32, vertical: f32) -> ProposalSize {
     ProposalSize::new(
         shrink_extent(proposal.width, horizontal),
         shrink_extent(proposal.height, vertical),
@@ -137,12 +141,7 @@ pub(crate) fn shrink_proposal(
 
 /// The offer a scroll owner makes its content: `None` down every scrolling
 /// axis, the finite viewport extent across each non-scrolling one.
-pub(crate) fn scroll_offer(
-    horizontal: bool,
-    vertical: bool,
-    width: f32,
-    height: f32,
-) -> ProposalSize {
+pub fn scroll_offer(horizontal: bool, vertical: bool, width: f32, height: f32) -> ProposalSize {
     ProposalSize::new(
         if horizontal { None } else { Some(width) },
         if vertical { None } else { Some(height) },
@@ -151,7 +150,7 @@ pub(crate) fn scroll_offer(
 
 /// The offer a scrolling list makes each row it lays out natively: the
 /// list's cross-axis extent, `None` down the scrolling axis.
-pub(crate) fn row_offer(orientation: Orientation, cross_extent: f32) -> ProposalSize {
+pub fn row_offer(orientation: Orientation, cross_extent: f32) -> ProposalSize {
     match orientation {
         Orientation::Vertical => ProposalSize::new(Some(cross_extent), None),
         _ => ProposalSize::new(None, Some(cross_extent)),
@@ -165,7 +164,7 @@ pub(crate) fn row_offer(orientation: Orientation, cross_extent: f32) -> Proposal
 /// — so a layout container hosted there reconstructs the owner's offer from
 /// this annotation on the first pass rather than waiting for the viewport's
 /// post-allocation delivery.
-pub(crate) fn set_scroll_axes(widget: &Widget, horizontal: bool, vertical: bool) {
+pub fn set_scroll_axes(widget: &Widget, horizontal: bool, vertical: bool) {
     ensure_widget_layout(widget)
         .scroll_axes
         .set(Some((horizontal, vertical)));
@@ -183,7 +182,7 @@ fn scroll_axes(widget: &Widget) -> Option<(bool, bool)> {
 /// crosses the transparent wrappers a scroll view's content may be wrapped
 /// in and ends at the toplevel — natively hosted content outside a scroll
 /// owner has no annotation.
-pub(crate) fn scroll_axes_for(widget: &Widget) -> Option<(bool, bool)> {
+pub fn scroll_axes_for(widget: &Widget) -> Option<(bool, bool)> {
     let mut current = Some(widget.clone());
     while let Some(w) = current {
         if let Some(axes) = scroll_axes(&w) {
@@ -196,7 +195,7 @@ pub(crate) fn scroll_axes_for(widget: &Widget) -> Option<(bool, bool)> {
 
 /// The stretch axis a `SubView` should report for `widget`: a live provider's
 /// answer first, then the axis recorded at render time.
-pub(crate) fn query_axis(widget: &Widget) -> Option<StretchAxis> {
+pub fn query_axis(widget: &Widget) -> Option<StretchAxis> {
     let layout = widget_layout(widget)?;
     // SAFETY: same soundness argument as `ensure_widget_layout`.
     let layout = unsafe { layout.as_ref() };
@@ -208,7 +207,7 @@ pub(crate) fn query_axis(widget: &Widget) -> Option<StretchAxis> {
 
 /// The layout priority a `SubView` should report for `widget`: the recorded
 /// explicit or host-defaulted value first, then a live provider's answer.
-pub(crate) fn query_priority(widget: &Widget) -> Option<i32> {
+pub fn query_priority(widget: &Widget) -> Option<i32> {
     let layout = widget_layout(widget)?;
     // SAFETY: same soundness argument as `ensure_widget_layout`.
     let layout = unsafe { layout.as_ref() };
@@ -224,7 +223,7 @@ pub(crate) fn query_priority(widget: &Widget) -> Option<i32> {
 }
 
 /// The axis recorded at render time, before any provider is consulted.
-pub(crate) fn reported_axis(widget: &Widget) -> Option<StretchAxis> {
+pub fn reported_axis(widget: &Widget) -> Option<StretchAxis> {
     widget_layout(widget).and_then(|layout| {
         // SAFETY: same soundness argument as `ensure_widget_layout`.
         unsafe { layout.as_ref() }.reported_axis.get()
@@ -232,47 +231,38 @@ pub(crate) fn reported_axis(widget: &Widget) -> Option<StretchAxis> {
 }
 
 /// Records the axis `render_any_with_axis` resolved for `widget`'s view.
-pub(crate) fn note_reported_axis(widget: &Widget, axis: StretchAxis) {
+pub fn note_reported_axis(widget: &Widget, axis: StretchAxis) {
     ensure_widget_layout(widget).reported_axis.set(Some(axis));
 }
 
 /// Installs the live axis provider `SubView` queries consult before the
 /// recorded declaration. Dynamic hosts and layout containers use it to
 /// answer from live child state rather than a render-time snapshot.
-pub(crate) fn install_axis_provider(
-    widget: &Widget,
-    provider: impl Fn(&Widget) -> StretchAxis + 'static,
-) {
+pub fn install_axis_provider(widget: &Widget, provider: impl Fn(&Widget) -> StretchAxis + 'static) {
     *ensure_widget_layout(widget).axis_provider.borrow_mut() = Some(Rc::new(provider));
 }
 
 /// Installs the live priority provider consulted when no explicit or
 /// host-defaulted `priority` was recorded.
-pub(crate) fn install_priority_provider(
-    widget: &Widget,
-    provider: impl Fn(&Widget) -> i32 + 'static,
-) {
+pub fn install_priority_provider(widget: &Widget, provider: impl Fn(&Widget) -> i32 + 'static) {
     *ensure_widget_layout(widget).priority_provider.borrow_mut() = Some(Rc::new(provider));
 }
 
 /// Records the widget's layout priority — a `Spacer` default or a
 /// `Metadata<LayoutPriority>` override; the last write wins, so a wrapper
 /// rendered after its content overwrites the content's default.
-pub(crate) fn set_layout_priority(widget: &Widget, priority: i32) {
+pub fn set_layout_priority(widget: &Widget, priority: i32) {
     ensure_widget_layout(widget).priority.set(Some(priority));
 }
 
 /// Installs what a delivered selected proposal does on `widget`.
-pub(crate) fn install_proposal_sink(
-    widget: &Widget,
-    sink: impl Fn(&Widget, ProposalSize) + 'static,
-) {
+pub fn install_proposal_sink(widget: &Widget, sink: impl Fn(&Widget, ProposalSize) + 'static) {
     *ensure_widget_layout(widget).proposal_sink.borrow_mut() = Some(Rc::new(sink));
 }
 
 /// Installs the widget's raw measurement channel — see `measure_provider`
 /// on [`WidgetLayout`] for the contract.
-pub(crate) fn install_measure_provider(
+pub fn install_measure_provider(
     widget: &Widget,
     provider: impl Fn(&Widget, ProposalSize, StretchAxis) -> Option<ViewDimensions> + 'static,
 ) {
@@ -280,9 +270,7 @@ pub(crate) fn install_measure_provider(
 }
 
 /// The widget's installed raw-measure provider, if any.
-pub(crate) fn measure_provider(
-    widget: &Widget,
-) -> Option<Rc<dyn Fn(&Widget, ProposalSize, StretchAxis) -> Option<ViewDimensions>>> {
+pub fn measure_provider(widget: &Widget) -> Option<MeasureProvider> {
     let layout = widget_layout(widget)?;
     // SAFETY: same soundness argument as `ensure_widget_layout`.
     unsafe { layout.as_ref() }
@@ -294,7 +282,7 @@ pub(crate) fn measure_provider(
 
 /// Marks `widget` transparent to proposals: a delivery is forwarded
 /// unchanged to `child`, the content the widget hosts.
-pub(crate) fn forward_proposals_to_child(widget: &Widget, child: &Widget) {
+pub fn forward_proposals_to_child(widget: &Widget, child: &Widget) {
     let child = child.clone();
     install_proposal_sink(widget, move |_, proposal| {
         deliver_proposal(&child, proposal);
@@ -313,7 +301,7 @@ pub(crate) fn forward_proposals_to_child(widget: &Widget, child: &Widget) {
 ///
 /// `content` is named, never discovered: chrome-bearing hosts (a badge's
 /// overlay, a list row) hold siblings a first-child lookup could mistake.
-pub(crate) fn transparent_to_content(widget: &Widget, content: &Widget) {
+pub fn transparent_to_content(widget: &Widget, content: &Widget) {
     forward_proposals_to_child(widget, content);
 
     let content_for_measure = content.clone();
@@ -347,7 +335,7 @@ pub(crate) fn transparent_to_content(widget: &Widget, content: &Widget) {
     clippy::cast_precision_loss,
     reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
 )]
-pub(crate) fn forward_box_content_slot(row: &gtk4::Box, content: &Widget) {
+pub fn forward_box_content_slot(row: &gtk4::Box, content: &Widget) {
     let content = content.clone();
     install_proposal_sink(row.upcast_ref(), move |w, proposal| {
         let row_box = w
@@ -387,7 +375,7 @@ pub(crate) fn forward_box_content_slot(row: &gtk4::Box, content: &Widget) {
 }
 
 /// The proposal last delivered to `widget`'s sink, if any.
-pub(crate) fn retained_proposal(widget: &Widget) -> Option<ProposalSize> {
+pub fn retained_proposal(widget: &Widget) -> Option<ProposalSize> {
     widget_layout(widget).and_then(|layout| {
         // SAFETY: same soundness argument as `ensure_widget_layout`.
         unsafe { layout.as_ref() }.retained_proposal.get()
@@ -399,7 +387,7 @@ pub(crate) fn retained_proposal(widget: &Widget) -> Option<ProposalSize> {
 /// occupancy changes without a new delivery (a sibling's visibility flip)
 /// re-negotiates the content slot through this instead of waiting for the
 /// parent's next allocation.
-pub(crate) fn reoffer_proposal(widget: &Widget) {
+pub fn reoffer_proposal(widget: &Widget) {
     let Some(layout) = widget_layout(widget) else {
         return;
     };
@@ -428,7 +416,7 @@ pub(crate) fn reoffer_proposal(widget: &Widget) {
     clippy::cast_precision_loss,
     reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
 )]
-pub(crate) fn deliver_proposal(widget: &Widget, proposal: ProposalSize) {
+pub fn deliver_proposal(widget: &Widget, proposal: ProposalSize) {
     let Some(layout) = widget_layout(widget) else {
         return;
     };

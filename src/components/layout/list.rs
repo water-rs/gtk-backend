@@ -230,7 +230,7 @@ mod imp {
     /// A host without a layout manager, so GTK invokes its allocation vfunc.
     /// The inner box retains GTK's native chrome and content allocation.
     #[derive(Debug, Default)]
-    pub(crate) struct WuiListRow {
+    pub struct WuiListRow {
         pub content_box: RefCell<Option<gtk4::Box>>,
     }
 

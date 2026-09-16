@@ -74,58 +74,14 @@ impl GtkComponent for Native<LazyContainer> {
 
         // Create factory for lazy binding
         let factory = gtk4::SignalListItemFactory::new();
-        let contents_clone = contents.clone();
-        let env_clone = env;
-
-        factory.connect_setup(|_, item| {
-            let list_item = item.downcast_ref::<gtk4::ListItem>().unwrap();
-            let placeholder = gtk4::Box::new(Orientation::Vertical, 0);
-            list_item.set_child(Some(&placeholder));
-        });
-
-        factory.connect_bind(move |_, item| {
-            let list_item = item.downcast_ref::<gtk4::ListItem>().unwrap();
-            let id = list_item_id(list_item);
-            let index = usize::try_from(list_item.position())
-                .expect("GTK LazyContainer position must fit in usize");
-            let current_id = contents_clone
-                .get_id(index)
-                .expect("GTK LazyContainer position must exist in WaterUI contents");
-            assert_eq!(
-                i32::from(*current_id),
-                id,
-                "GTK LazyContainer model position must match WaterUI contents"
-            );
-
-            // Reconstruct view lazily
-            if let Some(view) = contents_clone.get_view(index) {
-                // Render with a fresh renderer to avoid holding a raw pointer.
-                let mut renderer = GtkRenderer::new();
-                let widget = renderer.render_any(view, &env_clone);
-                if spacing_px > 0 {
-                    match orientation {
-                        Orientation::Vertical => widget.set_margin_bottom(spacing_px),
-                        _ => widget.set_margin_end(spacing_px),
-                    }
-                }
-                list_item.set_child(Some(&widget));
-                // The list owns the row's scrolling: a layout container in
-                // the row reconstructs the raw scroll offer from this marker
-                // and its own allocation inside its `size_allocate` vfunc —
-                // strictly before it allocates its children, on the first
-                // pass and every pass after. There is no `size-allocate`
-                // signal in GTK4 to hook from the outside.
-                set_scroll_axes(&widget, scrolls_h, scrolls_v);
-            } else {
-                list_item.set_child(Option::<&Widget>::None);
-            }
-        });
-
-        factory.connect_unbind(|_, item| {
-            if let Some(list_item) = item.downcast_ref::<gtk4::ListItem>() {
-                list_item.set_child(Option::<&Widget>::None);
-            }
-        });
+        wire_factory(
+            &factory,
+            contents.clone(),
+            env,
+            orientation,
+            spacing_px,
+            (scrolls_h, scrolls_v),
+        );
 
         // Create ListView (NO ScrolledWindow - parent handles scrolling)
         let selection = gtk4::NoSelection::new(Some(model.store()));
@@ -157,6 +113,68 @@ impl GtkComponent for Native<LazyContainer> {
 
         list_view.upcast()
     }
+}
+
+/// Wires the factory's row lifecycle: an empty placeholder box on setup, the
+/// WaterUI view for the row's position on bind, and the child released on
+/// unbind.
+fn wire_factory(
+    factory: &gtk4::SignalListItemFactory,
+    contents: SharedAnyViews<AnyView>,
+    env: Environment,
+    orientation: Orientation,
+    spacing_px: i32,
+    scroll_axes: (bool, bool),
+) {
+    factory.connect_setup(|_, item| {
+        let list_item = item.downcast_ref::<gtk4::ListItem>().unwrap();
+        let placeholder = gtk4::Box::new(Orientation::Vertical, 0);
+        list_item.set_child(Some(&placeholder));
+    });
+
+    factory.connect_bind(move |_, item| {
+        let list_item = item.downcast_ref::<gtk4::ListItem>().unwrap();
+        let id = list_item_id(list_item);
+        let index = usize::try_from(list_item.position())
+            .expect("GTK LazyContainer position must fit in usize");
+        let current_id = contents
+            .get_id(index)
+            .expect("GTK LazyContainer position must exist in WaterUI contents");
+        assert_eq!(
+            i32::from(*current_id),
+            id,
+            "GTK LazyContainer model position must match WaterUI contents"
+        );
+
+        // Reconstruct view lazily
+        if let Some(view) = contents.get_view(index) {
+            // Render with a fresh renderer to avoid holding a raw pointer.
+            let mut renderer = GtkRenderer::new();
+            let widget = renderer.render_any(view, &env);
+            if spacing_px > 0 {
+                match orientation {
+                    Orientation::Vertical => widget.set_margin_bottom(spacing_px),
+                    _ => widget.set_margin_end(spacing_px),
+                }
+            }
+            list_item.set_child(Some(&widget));
+            // The list owns the row's scrolling: a layout container in
+            // the row reconstructs the raw scroll offer from this marker
+            // and its own allocation inside its `size_allocate` vfunc —
+            // strictly before it allocates its children, on the first
+            // pass and every pass after. There is no `size-allocate`
+            // signal in GTK4 to hook from the outside.
+            set_scroll_axes(&widget, scroll_axes.0, scroll_axes.1);
+        } else {
+            list_item.set_child(Option::<&Widget>::None);
+        }
+    });
+
+    factory.connect_unbind(|_, item| {
+        if let Some(list_item) = item.downcast_ref::<gtk4::ListItem>() {
+            list_item.set_child(Option::<&Widget>::None);
+        }
+    });
 }
 
 /// Realizes a `LazyContainer` whose layout is not a virtualizable stack —

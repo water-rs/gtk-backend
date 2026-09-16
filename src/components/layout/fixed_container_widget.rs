@@ -339,6 +339,12 @@ impl WuiFixedContainer {
     }
 
     /// Creates a container that lays `children` out with `layout`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the installed proposal sink ever runs on a widget that is
+    /// not a `WuiFixedContainer`; the sink is attached to the created
+    /// container and only proposals delivered to it reach the sink.
     #[must_use]
     pub fn new(layout: Box<dyn Layout>, children: Vec<(Widget, StretchAxis)>) -> Self {
         let obj: Self = glib::Object::new();
@@ -1013,6 +1019,10 @@ mod tests {
 
     /// GTK already includes native-leaf margins in sizes and baselines;
     /// the raw bridge must not count or subtract them a second time.
+    #[allow(
+        clippy::float_cmp,
+        reason = "every compared value is an exact integer-measure conversion or a min/max of such values, so equality is deterministic"
+    )]
     #[test]
     fn leaf_measurement_accounts_for_margins() {
         init();
@@ -1053,7 +1063,7 @@ mod tests {
         let (handler, dynamic) = waterui_core::dynamic::Dynamic::new();
         let host = Native::new(dynamic).render(&env, &mut renderer);
 
-        let subview = GtkSubView::new(host.clone(), StretchAxis::None);
+        let subview = GtkSubView::new(host, StretchAxis::None);
         handler.set(waterui_layout::spacer::Spacer::new(8.0));
         let context = glib::MainContext::default();
         while context.iteration(false) {}
