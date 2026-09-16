@@ -526,6 +526,11 @@ mod webkitgtk {
         let context = NonNull::new(unsafe { webkit_web_context_new() })
             .expect("webkit_web_context_new returned null (fast-fail)");
 
+        // The scheme and its security flags go in before the context serves a
+        // view — the documented registration order — so no part of the view's
+        // process world can observe the context without them.
+        register_asset_scheme(context, server);
+
         // The view takes its own reference to `context` here.
         //
         // SAFETY: `webkit_web_view_get_type` is the WebKitWebView `GType`,
@@ -542,8 +547,6 @@ mod webkitgtk {
         })
         .expect("g_object_new for WebKitWebView returned null (fast-fail)")
         .cast::<WebKitWebView>();
-
-        register_asset_scheme(context, server);
 
         // SAFETY: balances the construction reference of `context`; the view's
         // own reference keeps it alive until the view is finalized, which is
@@ -625,6 +628,14 @@ mod webkitgtk {
             // The scheme is ours but the host is not the asset host.
             None => AssetResponse::not_found(),
         };
+        // Diagnostic tracing for the CI-only fetch failure under investigation;
+        // removed with the diagnosis.
+        eprintln!(
+            "asset scheme request: method={method} uri={uri} -> status={} headers={} body={}B",
+            response.status,
+            response.headers.len(),
+            response.body.len(),
+        );
         finish_scheme_request(request, &response);
     }
 
@@ -1599,6 +1610,24 @@ impl GtkWebViewHandle {
             webkitgtk::connect_signal(webview_obj, &tls_signal, tls_callback, tls_data);
         }
 
+        self.install_history_observers(webview_obj);
+    }
+
+    /// Connects `load-changed` and `WebKitBackForwardList::changed` onto one
+    /// deduplicated `NavigationState` emitter.
+    ///
+    /// `load-changed` sees every document load; the list's `changed` signal
+    /// sees every mutation, including the same-document entries `load-changed`
+    /// never reports. Sharing one `Cell` between the connections makes
+    /// whichever fires first report the edge while the other finds the pair
+    /// already current.
+    #[cfg(all(
+        feature = "webkitgtk",
+        gtk_webkitgtk_link_available,
+        unix,
+        not(target_os = "macos")
+    ))]
+    fn install_history_observers(&self, webview_obj: *mut gtk4::glib::gobject_ffi::GObject) {
         let load_changed_signal =
             std::ffi::CString::new("load-changed").expect("valid signal name");
         // SAFETY: `on_load_changed` has the `load-changed` signal's C
@@ -1610,8 +1639,6 @@ impl GtkWebViewHandle {
                 unsafe extern "C" fn(),
             >(on_load_changed)
         });
-        // Both history signals feed one deduplicated state, so whichever fires
-        // first reports the edge and the other finds the pair already current.
         let last_navigation = Rc::new(Cell::new((false, false)));
         let load_changed_data = NavigationStateData {
             shared: self.shared.clone(),
@@ -2737,8 +2764,8 @@ unsafe extern "C" fn on_script_message_received(
 ///
 /// `WebKitGTK` reports script messages without the frame that sent them, so this
 /// authenticates the document the view is showing. Subframe content is kept away
-/// from the bridge by injecting the transport into the top frame only, and only
-/// into documents the policy's URI patterns admit.
+/// from the bridge by injecting the transport into the top frame only; the
+/// policy itself is enforced here, at message receipt.
 #[cfg(all(
     feature = "webkitgtk",
     gtk_webkitgtk_link_available,
@@ -2825,6 +2852,9 @@ unsafe extern "C" fn on_load_failed(
     // SAFETY: `error` is the live `GError` WebKit hands this signal; `message`
     // is a valid NUL-terminated string.
     let message = webkitgtk::cstr_to_string(unsafe { (*error).message });
+    // Diagnostic tracing for the CI-only fetch failure under investigation;
+    // removed with the diagnosis.
+    eprintln!("load-failed: {message}");
     data.shared
         .emit(WebViewEvent::Error(WebViewError::LoadFailed(Str::from(
             message,

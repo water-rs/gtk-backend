@@ -100,3 +100,83 @@ fn same_document_history_change_reports_navigation_state() {
         ))
         .expect("a same-document history entry must report NavigationState");
 }
+
+/// Temporary diagnostic for the CI-only `fetch('/app.js')` "Load failed"
+/// rejection: reports what the page itself sees — its URL, origin, secure
+/// context flags, and the fetch's exact error — alongside the scheme handler's
+/// own tracing. Removed with the diagnosis.
+#[test]
+fn asset_origin_fetch_diagnostic() {
+    // SAFETY: same CI sandbox escape as the conformance test above, set before
+    // GTK, WebKit, or any concurrent environment reader starts.
+    unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
+    gtk4::init().expect("WebKitGTK tests require a display");
+    let _inspector = crate::init_main_thread_executors();
+    let controller = waterui_webview::WebViewController::new(crate::webview::GtkWebViewController);
+    let webview = controller.open_with(waterui_webview::WebViewConfig {
+        asset_server: Some(Arc::new(
+            |request: &waterui_webview::assets::AssetRequest| {
+                waterui_webview::assets::AssetResponse::ok(
+                    if request.path.as_str() == "/app.js" {
+                        "text/javascript"
+                    } else {
+                        "text/html"
+                    },
+                    b"globalThis.__served = true;".to_vec(),
+                )
+            },
+        )),
+    });
+    let handle = webview.handle().clone();
+    let events = Rc::new(RefCell::new(Vec::<BackendEvent>::new()));
+    let _guard = handle.watch({
+        let events = Rc::clone(&events);
+        move |event| {
+            eprintln!("webview event: {event:?}");
+            events.borrow_mut().push(event);
+        }
+    });
+    glib::MainContext::default()
+        .block_on(glib::future_with_timeout(
+            Duration::from_secs(30),
+            async move {
+                handle
+                    .run_javascript("'installed'")
+                    .await
+                    .expect("the engine evaluates on its initial document");
+                handle.go_to(
+                    &"waterui://localhost/index.html"
+                        .parse()
+                        .expect("the asset entry URL parses"),
+                );
+                loop {
+                    if events
+                        .borrow()
+                        .iter()
+                        .any(|event| matches!(event, BackendEvent::Event(WebViewEvent::Loaded)))
+                    {
+                        break;
+                    }
+                    glib::timeout_future(Duration::from_millis(10)).await;
+                }
+                let page_state = handle
+                    .call_async_javascript(
+                        "return [location.href, location.origin, \
+                         String(isSecureContext), String(crossOriginIsolated)].join('|');",
+                    )
+                    .await
+                    .expect("page state evaluates");
+                eprintln!("page state: {page_state}");
+                let fetched = handle
+                    .call_async_javascript(
+                        "return fetch('/app.js')\
+                            .then((r) => 'OK ' + r.status + ' ' + r.headers.get('content-type'))\
+                            .catch((e) => 'ERR ' + e.name + ': ' + e.message);",
+                    )
+                    .await
+                    .expect("the fetch probe itself resolves");
+                eprintln!("fetch probe: {fetched}");
+            },
+        ))
+        .expect("the diagnostic flow must finish inside its timeout");
+}
