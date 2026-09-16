@@ -116,7 +116,7 @@ impl GtkComponent for Native<LazyContainer> {
 }
 
 /// Wires the factory's row lifecycle: an empty placeholder box on setup, the
-/// WaterUI view for the row's position on bind, and the child released on
+/// `WaterUI` view for the row's position on bind, and the child released on
 /// unbind.
 fn wire_factory(
     factory: &gtk4::SignalListItemFactory,

@@ -290,7 +290,7 @@ mod imp {
 glib::wrapper! {
     /// A list-row host that delivers the list's offer to its inner box
     /// before its children are allocated.
-    pub(crate) struct WuiListRow(ObjectSubclass<imp::WuiListRow>)
+    pub struct WuiListRow(ObjectSubclass<imp::WuiListRow>)
         @extends Widget,
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget;
 }
