@@ -332,10 +332,7 @@ mod webkitgtk {
 
     #[link(name = "webkitgtk-6.0")]
     unsafe extern "C" {
-        fn webkit_network_session_new(
-            data_directory: *const c_char,
-            cache_directory: *const c_char,
-        ) -> *mut WebKitNetworkSession;
+        fn webkit_network_session_new_ephemeral() -> *mut WebKitNetworkSession;
         fn webkit_network_session_get_cookie_manager(
             session: *mut WebKitNetworkSession,
         ) -> *mut WebKitCookieManager;
@@ -538,14 +535,15 @@ mod webkitgtk {
         // Without one the view borrows the process-global default session —
         // a leaked singleton whose network process outlives the view and is
         // torn down only at process exit, racing whatever teardown is still
-        // in flight. `NULL, NULL` asks for an ephemeral session: the asset
-        // view needs isolation, not on-disk persistence.
+        // in flight. `new_ephemeral` gives the view a private in-memory
+        // `WebsiteDataStore`: `webkit_network_session_new(NULL, NULL)` would
+        // instead persist under the default directories shared with every
+        // default-session view.
         //
-        // SAFETY: `webkit_network_session_new` has no preconditions; a null
-        // return is caught by the `NonNull` wrapper.
-        let session =
-            NonNull::new(unsafe { webkit_network_session_new(std::ptr::null(), std::ptr::null()) })
-                .expect("webkit_network_session_new returned null (fast-fail)");
+        // SAFETY: `webkit_network_session_new_ephemeral` has no
+        // preconditions; a null return is caught by the `NonNull` wrapper.
+        let session = NonNull::new(unsafe { webkit_network_session_new_ephemeral() })
+            .expect("webkit_network_session_new_ephemeral returned null (fast-fail)");
 
         // The view takes its own references to `context` and `session` here.
         //
