@@ -144,7 +144,14 @@ run_example() {
     RUST_LOG="${RUST_LOG:-info,waterui_gtk=debug,waterui_graphics=debug,waterui_media=debug,waterui::gtk::layout=debug}" \
         RUST_BACKTRACE=1 \
         WATERUI_GTK_LAYOUT_DEBUG=1 \
-        setsid "${bin}" >>"${log}" 2>&1 &
+        setsid gdb -batch \
+            -ex 'run' \
+            -ex 'echo \n=== CRASH BACKTRACE ===\n' \
+            -ex 'bt' \
+            -ex 'thread apply all bt' \
+            -ex 'info registers' \
+            -ex 'quit' \
+            --args "${bin}" >>"${log}" 2>&1 &
     launcher=$!
 
     win=""
