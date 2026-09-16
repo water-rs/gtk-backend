@@ -332,6 +332,10 @@ mod webkitgtk {
 
     #[link(name = "webkitgtk-6.0")]
     unsafe extern "C" {
+        fn webkit_network_session_new(
+            data_directory: *const c_char,
+            cache_directory: *const c_char,
+        ) -> *mut WebKitNetworkSession;
         fn webkit_network_session_get_cookie_manager(
             session: *mut WebKitNetworkSession,
         ) -> *mut WebKitCookieManager;
@@ -527,33 +531,59 @@ mod webkitgtk {
         // process world can observe the context without them.
         register_asset_scheme(context, server);
 
-        // The view takes its own reference to `context` here.
+        // A dedicated session keeps the view's network-process world inside
+        // the view's own lifetime: a `WebKitNetworkSession` owns the
+        // `WebsiteDataStore` and `NetworkProcessProxy`, so when the view is
+        // finalized the auxiliary process it spawned is torn down with it.
+        // Without one the view borrows the process-global default session —
+        // a leaked singleton whose network process outlives the view and is
+        // torn down only at process exit, racing whatever teardown is still
+        // in flight. `NULL, NULL` asks for an ephemeral session: the asset
+        // view needs isolation, not on-disk persistence.
+        //
+        // SAFETY: `webkit_network_session_new` has no preconditions; a null
+        // return is caught by the `NonNull` wrapper.
+        let session =
+            NonNull::new(unsafe { webkit_network_session_new(std::ptr::null(), std::ptr::null()) })
+                .expect("webkit_network_session_new returned null (fast-fail)");
+
+        // The view takes its own references to `context` and `session` here.
         //
         // SAFETY: `webkit_web_view_get_type` is the WebKitWebView `GType`,
-        // `web-context` is its construct property taking a `WebKitWebContext*`,
-        // the property list is NULL-terminated, and a null return is caught by
-        // the `NonNull` wrapper.
+        // `web-context` and `network-session` are its construct properties
+        // taking `WebKitWebContext*` and `WebKitNetworkSession*`, the property
+        // list is NULL-terminated, and a null return is caught by the
+        // `NonNull` wrapper.
         let view = NonNull::new(unsafe {
             g_object_new(
                 webkit_web_view_get_type(),
                 c"web-context".as_ptr(),
                 context.as_ptr(),
+                c"network-session".as_ptr(),
+                session.as_ptr(),
                 std::ptr::null::<c_char>(),
             )
         })
         .expect("g_object_new for WebKitWebView returned null (fast-fail)")
         .cast::<WebKitWebView>();
 
-        // SAFETY: balances the construction reference of `context`; the view's
-        // own reference keeps it alive until the view is finalized, which is
-        // when the scheme entry — and the server inside it — is reclaimed.
-        unsafe { glib::gobject_ffi::g_object_unref(context.as_ptr().cast()) };
+        // SAFETY: balances the construction references of `context` and
+        // `session`; the view's own references keep them alive until the view
+        // is finalized, which is when the scheme entry — and the server
+        // inside it — is reclaimed.
+        unsafe {
+            glib::gobject_ffi::g_object_unref(context.as_ptr().cast());
+            glib::gobject_ffi::g_object_unref(session.as_ptr().cast());
+        }
         view
     }
 
     /// Registers the `waterui` URI scheme on `context`, answered by `server`,
-    /// and marks it secure, local and CORS-enabled so the asset origin is a
-    /// secure context with working storage and `fetch`.
+    /// and marks it secure and CORS-enabled so the asset origin is a secure
+    /// context with working storage and `fetch`. The scheme is deliberately
+    /// not marked local: a file-class scheme makes `WebKit` sandbox the
+    /// served documents, which rejects same-origin `fetch` as a failed CORS
+    /// request and blocks `history.pushState` path changes.
     ///
     /// The server is boxed into the scheme entry: the context's destroy notify
     /// reclaims the box when the entry is destroyed — when the context, and
