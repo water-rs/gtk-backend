@@ -18,6 +18,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 
 use gdk4::prelude::*;
@@ -201,6 +202,8 @@ impl<F: Future> Future for WithGlContextCurrent<F> {
 
 /// The async bring-up state machine: device request, then filter setup.
 /// `Idle` doubles as "ready for the next step" once the device exists.
+static NEXT_FILTER_HOST_ID: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum SetupPhase {
     #[default]
@@ -370,6 +373,12 @@ mod imp {
         /// context-independent, so `unrealize` leaves it in place and the
         /// next `init_wgpu` replaces it.
         pub gl_resolver: Option<Rc<GlProcResolver>>,
+
+        /// Diagnostic identity assigned at host construction; the e2e
+        /// readiness gate attributes filtered-frame presentations per host.
+        pub host_id: u64,
+        /// Count of filtered frames this host has appended to its snapshot.
+        pub presented_frames: u64,
     }
 
     impl Default for FilteredHost {
@@ -395,6 +404,8 @@ mod imp {
                     frame_clock: EffectFrameClock::new(),
                     generation: 0,
                     gl_resolver: None,
+                    host_id: NEXT_FILTER_HOST_ID.fetch_add(1, Ordering::Relaxed),
+                    presented_frames: 0,
                 })),
             }
         }
@@ -421,6 +432,10 @@ impl FilteredHost {
 /// Builds the filtered-container widget hosting `content`.
 pub fn render_applied_filter(mut filter: AppliedFilter, content: Widget) -> Widget {
     let host = FilteredHost::new();
+    tracing::debug!(
+        "[gtk-filter] create filter host host_id={}",
+        host.imp().state.borrow().host_id
+    );
     content.set_parent(&host);
     // The host is transparent to layout — its measure and allocation pass the
     // content through untouched — so every layout channel reads through to
@@ -511,6 +526,13 @@ impl imp::FilteredHost {
         if let Some(texture) = presented {
             let rect = graphene::Rect::new(0.0, 0.0, obj.width() as f32, obj.height() as f32);
             snapshot.append_texture(&texture, &rect);
+            let mut state = self.state.borrow_mut();
+            state.presented_frames += 1;
+            tracing::debug!(
+                "[gtk-filter] filtered frame presented host_id={} seq={}",
+                state.host_id,
+                state.presented_frames
+            );
         }
         if needs_redraw {
             obj.queue_draw();

@@ -51,6 +51,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  WATERUI_REF: 24cb7bd20477b656b0c80331e50101ed75825b96
+  MAP_GPU_REV: de112654b7be687be4a6a30889650b22afe7cdca
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   WATERUI_DIR: ${{ github.workspace }}/waterui
@@ -77,9 +79,10 @@ jobs:
       - name: Emit the runnable example matrix
         id: list
         run: |
-          comm -23 \
-            <(./.github/scripts/discover-examples.sh | sort) \
-            <(grep -E '^\s*[^#[:space:]]' e2e/skip.txt | awk '{print $1}' | sort) \
+          # Diagnostic scope: only the two examples whose captures were blank
+          # in run 35095065215. Production coverage on dev is unaffected — this
+          # branch is a throwaway diagnostic, never merged.
+          printf 'map\nstress\n' \
             | tee /dev/stderr \
             | jq -Rnc '{example: [inputs]}' > /tmp/matrix.json
           echo "matrix=$(cat /tmp/matrix.json)" >> "$GITHUB_OUTPUT"

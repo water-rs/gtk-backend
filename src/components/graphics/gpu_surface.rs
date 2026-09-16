@@ -22,6 +22,7 @@ use std::num::NonZeroU32;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -70,6 +71,8 @@ impl PixelSize {
         }
     }
 }
+
+static NEXT_SURFACE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
 #[allow(
@@ -127,6 +130,14 @@ struct GpuState {
     /// so `unrealize` leaves it in place and the next `init_wgpu_if_needed`
     /// replaces it.
     gl_resolver: Option<Rc<GlProcResolver>>,
+
+    /// Diagnostic identity assigned at widget construction; the e2e
+    /// readiness gate attributes render completions per surface rather than
+    /// counting raw frame events, so repeated frames from one widget cannot
+    /// satisfy the set.
+    surface_id: u64,
+    /// Count of frames that completed the full render path for this surface.
+    frames_completed: u64,
 }
 
 /// The resources every renderer on one GL-adopted device shares.
@@ -156,7 +167,7 @@ impl DeviceSharedResources {
 }
 
 impl GpuState {
-    fn new(gpu_surface: GpuSurface, env: Environment) -> Self {
+    fn new(gpu_surface: GpuSurface, env: Environment, surface_id: u64) -> Self {
         let msaa_max_samples = gpu_surface.msaa_sample_limit();
         Self {
             start_time: Instant::now(),
@@ -186,6 +197,8 @@ impl GpuState {
             env,
             glow: None,
             gl_resolver: None,
+            surface_id,
+            frames_completed: 0,
         }
     }
 }
@@ -914,6 +927,13 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     st.last_size = Some(size);
     st.gpu_surface = Some(gpu_surface);
 
+    st.frames_completed += 1;
+    tracing::debug!(
+        "[gtk-gpu] surface render complete surface_id={} seq={}",
+        st.surface_id,
+        st.frames_completed
+    );
+
     // Prevent GTK from drawing anything else for this GLArea.
     let _ = msaa_samples;
     needs_redraw
@@ -1125,7 +1145,8 @@ impl SurfaceInputSink for GpuSurfaceInput {
 }
 
 pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget {
-    tracing::debug!("[gtk-gpu] create GLArea widget");
+    let surface_id = NEXT_SURFACE_ID.fetch_add(1, Ordering::Relaxed);
+    tracing::debug!("[gtk-gpu] create GLArea widget surface_id={surface_id}");
     let area = gtk4::GLArea::new();
     apply_stretch_sizing(&area, &gpu_surface);
     area.set_visible(true);
@@ -1135,7 +1156,7 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
     area.set_has_stencil_buffer(false);
 
     let wants_input_events = gpu_surface.wants_input_events();
-    let state = Rc::new(RefCell::new(GpuState::new(gpu_surface, env)));
+    let state = Rc::new(RefCell::new(GpuState::new(gpu_surface, env, surface_id)));
     install_input_controllers(&area, &state);
     // A view that draws its own interactive content — a browser page, a
     // terminal, an editor — takes the raw events instead of the per-frame
