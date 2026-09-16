@@ -35,7 +35,7 @@ fn asset_origin_serves_the_shared_bundled_site() {
 /// The whole body runs on a worker thread under a hard deadline: the 30 s
 /// async timeout inside bounds only work the main context can reach, while a
 /// synchronous native call stalling would hang the suite past it. A stall
-/// must fail fast with whatever the stage markers captured, not run forever.
+/// must fail fast, not run forever.
 #[test]
 fn same_document_history_change_reports_navigation_state() {
     let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
@@ -43,12 +43,10 @@ fn same_document_history_change_reports_navigation_state() {
         // SAFETY: same CI sandbox escape as the conformance test above, set
         // before GTK, WebKit, or any concurrent environment reader starts.
         unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
-        eprintln!("history: gtk init");
         gtk4::init().expect("WebKitGTK tests require a display");
         let _inspector = crate::init_main_thread_executors();
         let controller =
             waterui_webview::WebViewController::new(crate::webview::GtkWebViewController);
-        eprintln!("history: opening webview");
         let webview = controller.open_with(waterui_webview::WebViewConfig {
             asset_server: Some(Arc::new(
                 |_request: &waterui_webview::assets::AssetRequest| {
@@ -59,7 +57,6 @@ fn same_document_history_change_reports_navigation_state() {
                 },
             )),
         });
-        eprintln!("history: webview open");
         let handle = webview.handle().clone();
         let events = Rc::new(RefCell::new(Vec::<BackendEvent>::new()));
         let _guard = handle.watch({
@@ -89,12 +86,10 @@ fn same_document_history_change_reports_navigation_state() {
                         }
                         glib::timeout_future(Duration::from_millis(10)).await;
                     }
-                    eprintln!("history: loaded, pushing state");
                     handle
                         .call_async_javascript("history.pushState({}, '', '/pushed');")
                         .await
                         .expect("pushState succeeds on the asset origin");
-                    eprintln!("history: pushed, waiting for NavigationState");
                     loop {
                         if events.borrow().iter().any(|event| {
                             matches!(
@@ -109,7 +104,6 @@ fn same_document_history_change_reports_navigation_state() {
                         }
                         glib::timeout_future(Duration::from_millis(10)).await;
                     }
-                    eprintln!("history: NavigationState reported");
                 },
             ))
             .expect("a same-document history entry must report NavigationState");
