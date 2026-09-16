@@ -130,7 +130,7 @@ jobs:
           CARGO_TARGET_DIR: ${{ github.workspace }}/e2e-target
         run: |
           export PATH="${{ github.workspace }}/cli-bin/bin:$PATH"
-          water package --platform linux --backend gtk4 --release
+          water package --platform linux --backend gtk4 --release --yes
 
   e2e:
     name: example-${{ matrix.example }}
