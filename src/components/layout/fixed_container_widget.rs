@@ -5,29 +5,43 @@
 //! behavior. Children are parented with `set_parent` and allocated directly
 //! from `size_allocate` — the layout engine's rects are authoritative, so no
 //! GTK layout manager or size request sits between the engine and the child.
+//!
+//! The engine's [`Layout::place`] also selects a [`ProposalSize`] per child.
+//! When this widget is itself the placed child, the parent's
+//! [`apply_placements`] delivers that packet to [`Self::note_selected_proposal`]
+//! and it — not the bounds — drives the next placement pass. When no parent
+//! delivered one (the widget is natively hosted: window content, scroll-view
+//! content, a list row), the finite offer is reconstructed from the hosting
+//! bounds at this boundary and nowhere deeper.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{Widget, glib};
 use waterui_core::layout::{
-    Layout, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions, measure_layout,
-    with_memoized_children,
+    Layout, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement, ViewDimensions,
+    measure_layout, with_memoized_children,
 };
 
-use crate::layout::{FixedSizeSubView, GtkSubView, apply_rects};
+use crate::layout::proposal::{
+    install_axis_provider, install_proposal_sink, proposals_equal, query_axis, reported_axis,
+    scroll_axes_for, scroll_offer,
+};
+use crate::layout::{FixedSizeSubView, GtkSubView, apply_placements};
+use crate::util::store_watcher_guards;
 
 fn layout_debug_enabled() -> bool {
     std::env::var_os("WATERUI_GTK_LAYOUT_DEBUG").is_some()
 }
 
-fn trace_layout_rects(
+fn trace_layout_placements(
     operation: &str,
     width: i32,
     height: i32,
     child_count: usize,
-    rects: &[Rect],
+    placements: &[SubviewPlacement],
 ) {
     tracing::debug!(
         target: "waterui::gtk::layout",
@@ -35,19 +49,21 @@ fn trace_layout_rects(
         width,
         height,
         child_count,
-        rect_count = rects.len(),
+        placement_count = placements.len(),
         "Laid out GTK fixed container"
     );
-    for (index, rect) in rects.iter().enumerate().take(8) {
+    for (index, placement) in placements.iter().enumerate().take(8) {
         tracing::debug!(
             target: "waterui::gtk::layout",
             operation,
             index,
-            x = rect.x(),
-            y = rect.y(),
-            width = rect.width(),
-            height = rect.height(),
-            "GTK fixed-container child rectangle"
+            x = placement.frame.x(),
+            y = placement.frame.y(),
+            width = placement.frame.width(),
+            height = placement.frame.height(),
+            proposal_width = ?placement.proposal.width,
+            proposal_height = ?placement.proposal.height,
+            "GTK fixed-container child placement"
         );
     }
 }
@@ -65,6 +81,10 @@ mod imp {
     pub struct WuiFixedContainer {
         pub layout: RefCell<Option<Box<dyn Layout>>>,
         pub children: RefCell<Vec<(Widget, StretchAxis)>>,
+        /// The proposal the parent layout selected for this container —
+        /// `None` while no Rust-placed parent has delivered one (natively
+        /// hosted roots reconstruct their offer from the bounds instead).
+        pub selected_proposal: Cell<Option<ProposalSize>>,
     }
 
     #[glib::object_subclass]
@@ -95,10 +115,10 @@ mod imp {
             };
 
             let children = self.children.borrow();
-            if children.is_empty() {
-                return (0, 0, -1, -1);
-            }
 
+            // No empty-children shortcut: a leaf-shaped layout such as
+            // `SpacerLayout` still owes an honest answer (its minimum length),
+            // and `measure_layout` handles an empty child set correctly.
             let subviews: Vec<GtkSubView> = children
                 .iter()
                 .map(|(w, axis)| GtkSubView::new(w.clone(), *axis))
@@ -210,10 +230,9 @@ impl WuiFixedContainer {
         };
 
         let children = imp.children.borrow();
-        if children.is_empty() {
-            return ViewDimensions::new(Size::zero());
-        }
-
+        // No empty-children shortcut: `measure_layout` answers for an empty
+        // child set, and leaf-shaped layouts (`SpacerLayout`) still owe their
+        // minimum length.
         let subviews: Vec<GtkSubView> = children
             .iter()
             .map(|(w, axis)| GtkSubView::new(w.clone(), *axis))
@@ -224,7 +243,7 @@ impl WuiFixedContainer {
     }
 
     /// Runs the layout engine at `width`×`height` and allocates each child at
-    /// its resulting rect.
+    /// its resulting placement.
     #[allow(
         clippy::cast_precision_loss,
         reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
@@ -252,16 +271,71 @@ impl WuiFixedContainer {
             height: (height.max(0)) as f32,
         });
 
-        // Measure first with bounds-based proposal so children know available width/height.
-        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
-        let rects = with_memoized_children(&refs, |refs| {
+        // The placement proposal is the packet the parent layout selected for
+        // this container; a natively hosted root — window content, scroll-view
+        // content, a list row — has no parent delivery, so the offer is
+        // reconstructed at this boundary and nowhere deeper. Scroll-hosted
+        // content leaves each scrolling axis unspecified instead of playing
+        // its (potentially natural-sized) bounds back as the negotiated
+        // proposal. Measurement probes never write `selected_proposal`, so
+        // the packet in force survives however many passes the engine ran.
+        let proposal = imp.selected_proposal.get().unwrap_or_else(|| {
+            if let Some((scrolls_h, scrolls_v)) = scroll_axes_for(self.upcast_ref()) {
+                scroll_offer(scrolls_h, scrolls_v, bounds.width(), bounds.height())
+            } else {
+                ProposalSize::new(Some(bounds.width()), Some(bounds.height()))
+            }
+        });
+
+        let placements = with_memoized_children(&refs, |refs| {
             let _ = layout.size_that_fits(proposal, refs);
-            layout.place(bounds, refs)
+            layout.place(bounds, proposal, refs)
         });
         if layout_debug_enabled() {
-            trace_layout_rects(operation, width, height, children.len(), &rects);
+            trace_layout_placements(operation, width, height, children.len(), &placements);
         }
-        apply_rects(&rects, &children);
+        apply_placements(&placements, &children);
+    }
+
+    /// Stores the proposal the parent layout selected for this container.
+    ///
+    /// Called by [`deliver_proposal`](crate::layout::proposal::deliver_proposal)
+    /// through the widget's installed sink. A changed packet queues allocation:
+    /// GTK may skip a child `size_allocate` whose frame did not move, and the
+    /// queue flag is what forces the relayout when only the proposal changed.
+    fn note_selected_proposal(&self, proposal: ProposalSize) {
+        let imp = self.imp();
+        let previous = imp.selected_proposal.replace(Some(proposal));
+        if previous.is_none_or(|old| !proposals_equal(old, proposal)) {
+            self.queue_allocate();
+        }
+    }
+
+    /// The axis this container claims, re-derived from live child state.
+    ///
+    /// `Layout::stretch_axis` is answered with each child's *current* axis —
+    /// queried through the widget markers, not the snapshot taken when the
+    /// children were rendered — so a dynamic child whose content swapped
+    /// axes propagates the new claim. A leaf-shaped container (a `Spacer`'s
+    /// empty `SpacerLayout`) has no children to derive from and falls back
+    /// to the axis its view declared at render time.
+    fn live_stretch_axis(&self) -> StretchAxis {
+        let imp = self.imp();
+        let children = imp.children.borrow();
+        if children.is_empty()
+            && let Some(axis) = reported_axis(self.upcast_ref())
+        {
+            return axis;
+        }
+        let axes: Vec<StretchAxis> = children
+            .iter()
+            .map(|(child, recorded)| query_axis(child).unwrap_or(*recorded))
+            .collect();
+        let layout_borrow = imp.layout.borrow();
+        layout_borrow
+            .as_ref()
+            .expect("WuiFixedContainer: missing layout (internal error)")
+            .stretch_axis(&axes)
     }
 
     /// Creates a container that lays `children` out with `layout`.
@@ -278,12 +352,39 @@ impl WuiFixedContainer {
             );
         }
 
+        // Reactive inputs inside the layout (a spacing binding, a watched
+        // member) invalidate through this callback; the returned guards keep
+        // the subscriptions alive for the widget's lifetime.
+        let weak = obj.downgrade();
+        let guards = layout.watch_invalidation(Rc::new(move || {
+            if let Some(obj) = weak.upgrade() {
+                obj.queue_resize();
+            }
+        }));
+        store_watcher_guards(&obj, guards);
+
         *imp.layout.borrow_mut() = Some(layout);
         *imp.children.borrow_mut() = children;
 
         for (child, _) in imp.children.borrow().iter() {
             child.set_parent(&obj);
         }
+
+        // The widget-side layout contract: a delivered selected proposal is
+        // this container's next placement packet, and its stretch axis is
+        // derived live from whatever children it currently holds.
+        install_proposal_sink(obj.upcast_ref(), |w, proposal| {
+            let container = w
+                .downcast_ref::<Self>()
+                .expect("WuiFixedContainer proposal sink on wrong widget");
+            container.note_selected_proposal(proposal);
+        });
+        install_axis_provider(obj.upcast_ref(), |w| {
+            let container = w
+                .downcast_ref::<Self>()
+                .expect("WuiFixedContainer axis provider on wrong widget");
+            container.live_stretch_axis()
+        });
 
         obj
     }
@@ -317,14 +418,113 @@ impl WuiFixedContainer {
 #[cfg(test)]
 mod tests {
     use gtk4::Label;
-    use waterui_core::layout::{ProposalSize, StretchAxis, SubView};
+    use waterui_core::layout::{
+        PlacedSubview, ProposalSize, StretchAxis, SubView, VerticalAlignment,
+    };
+    use waterui_core::{AnyView, Environment, Native};
     use waterui_layout::stack::VStackLayout;
 
     use super::*;
+    use crate::component::GtkComponent;
+    use crate::layout::proposal::{
+        deliver_proposal, forward_box_content_slot, forward_proposals_to_child, query_axis,
+        query_priority, reoffer_proposal, row_offer, set_layout_priority, set_scroll_axes,
+        transparent_to_content,
+    };
     use crate::layout::subview::GtkSubView;
+    use crate::renderer::GtkRenderer;
+
+    fn logical_extent(value: i32) -> f32 {
+        num_traits::cast(value).expect("GTK integer geometry fits f32")
+    }
 
     fn init() {
         gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
+    }
+
+    /// A layout that places every child at a fixed frame under the proposal
+    /// the test selects, and records each proposal `place` was invoked with
+    /// and each proposal `size_that_fits` was probed with. The parent's
+    /// instance picks the packet delivered to a child; a nested container's
+    /// instance observes what arrived.
+    #[derive(Debug)]
+    struct ProbeLayout {
+        frame: Rect,
+        selected: Rc<Cell<ProposalSize>>,
+        placed: Rc<RefCell<Vec<ProposalSize>>>,
+        probed: Rc<RefCell<Vec<ProposalSize>>>,
+        vertical_guide: Option<(VerticalAlignment, f32)>,
+    }
+
+    impl ProbeLayout {
+        fn new(
+            frame_size: f32,
+            selected: Rc<Cell<ProposalSize>>,
+        ) -> (Self, Rc<RefCell<Vec<ProposalSize>>>) {
+            let placed = Rc::new(RefCell::new(Vec::new()));
+            (
+                Self {
+                    frame: Rect::from_size(Size::new(frame_size, frame_size)),
+                    selected,
+                    placed: Rc::clone(&placed),
+                    probed: Rc::new(RefCell::new(Vec::new())),
+                    vertical_guide: None,
+                },
+                placed,
+            )
+        }
+
+        /// The proposals `size_that_fits` was probed with, in order.
+        fn probes(&self) -> Rc<RefCell<Vec<ProposalSize>>> {
+            Rc::clone(&self.probed)
+        }
+
+        /// Exposes `alignment` as an explicit vertical guide resolving to `value`.
+        fn with_vertical_guide(mut self, alignment: VerticalAlignment, value: f32) -> Self {
+            self.vertical_guide = Some((alignment, value));
+            self
+        }
+    }
+
+    impl Layout for ProbeLayout {
+        fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
+            self.probed.borrow_mut().push(proposal);
+            Size::new(self.frame.width(), self.frame.height())
+        }
+
+        fn place(
+            &self,
+            _bounds: Rect,
+            proposal: ProposalSize,
+            children: &[&dyn SubView],
+        ) -> Vec<SubviewPlacement> {
+            self.placed.borrow_mut().push(proposal);
+            children
+                .iter()
+                .map(|_| SubviewPlacement::new(self.frame, self.selected.get()))
+                .collect()
+        }
+
+        fn explicit_vertical_alignments(&self) -> Vec<VerticalAlignment> {
+            self.vertical_guide
+                .map(|(alignment, _)| vec![alignment])
+                .unwrap_or_default()
+        }
+
+        fn explicit_vertical(
+            &self,
+            alignment: VerticalAlignment,
+            _bounds: Rect,
+            _children: &[PlacedSubview<'_>],
+        ) -> Option<f32> {
+            self.vertical_guide
+                .and_then(|(guide, value)| (guide == alignment).then_some(value))
+        }
+    }
+
+    /// A labeled child inside a container whose placement the test controls.
+    fn label_child() -> (Widget, StretchAxis) {
+        (Label::new(Some("child")).upcast(), StretchAxis::None)
     }
 
     /// A wrapping label's width must not shrink to fit a height proposal:
@@ -372,6 +572,496 @@ mod tests {
         assert!(
             min_w < nat_w,
             "minimum {min_w} must stay below natural {nat_w}"
+        );
+    }
+
+    /// `Layout::place` picks a proposal per child; `apply_placements` must
+    /// deliver that packet to the child before allocating it, so a nested
+    /// container lays its own children out under the same negotiated packet.
+    #[test]
+    fn selected_proposal_reaches_nested_container() {
+        init();
+        let chosen = ProposalSize::new(Some(64.0), Some(48.0));
+        let inner_selected = Rc::new(Cell::new(ProposalSize::UNSPECIFIED));
+        let (inner_layout, inner_placed) = ProbeLayout::new(10.0, inner_selected);
+        let inner = WuiFixedContainer::new(Box::new(inner_layout), vec![label_child()]);
+
+        let parent_selected = Rc::new(Cell::new(chosen));
+        let (parent_layout, _) = ProbeLayout::new(40.0, parent_selected);
+        let parent = WuiFixedContainer::new(
+            Box::new(parent_layout),
+            vec![(inner.clone().upcast(), StretchAxis::None)],
+        );
+
+        parent.allocate(200, 200, -1, None);
+
+        assert_eq!(
+            inner.imp().selected_proposal.get(),
+            Some(chosen),
+            "container did not retain the parent's selected proposal"
+        );
+        assert_eq!(
+            inner_placed.borrow().last().copied(),
+            Some(chosen),
+            "nested placement ran under a different proposal than delivered"
+        );
+    }
+
+    /// A layout-transparent wrapper — the `GtkBox` metadata realization —
+    /// must forward a delivered selected proposal to the content it hosts.
+    #[test]
+    fn transparent_wrapper_forwards_selected_proposal() {
+        init();
+        let chosen = ProposalSize::new(Some(96.0), Some(24.0));
+        let (inner_layout, inner_placed) =
+            ProbeLayout::new(10.0, Rc::new(Cell::new(ProposalSize::UNSPECIFIED)));
+        let inner = WuiFixedContainer::new(Box::new(inner_layout), vec![label_child()]);
+
+        let wrapper = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        wrapper.append(&inner);
+        forward_proposals_to_child(wrapper.upcast_ref(), inner.upcast_ref());
+
+        let parent_selected = Rc::new(Cell::new(chosen));
+        let (parent_layout, _) = ProbeLayout::new(40.0, parent_selected);
+        let parent = WuiFixedContainer::new(
+            Box::new(parent_layout),
+            vec![(wrapper.upcast(), StretchAxis::None)],
+        );
+
+        parent.allocate(200, 200, -1, None);
+
+        assert_eq!(inner.imp().selected_proposal.get(), Some(chosen));
+        assert_eq!(inner_placed.borrow().last().copied(), Some(chosen));
+    }
+
+    /// Minimum, ideal, and maximum probes are queries, not placements: none
+    /// may overwrite the selected proposal a parent delivered — including an
+    /// unbounded maximum, which must survive as `f32::INFINITY` and never
+    /// reach GTK as `i32::MAX`.
+    #[test]
+    fn measurement_probes_do_not_overwrite_selected_proposal() {
+        init();
+        let chosen = ProposalSize::new(Some(64.0), Some(48.0));
+        let (inner_layout, _) = ProbeLayout::new(10.0, Rc::new(Cell::new(chosen)));
+        let inner = WuiFixedContainer::new(Box::new(inner_layout), vec![label_child()]);
+
+        let parent_selected = Rc::new(Cell::new(chosen));
+        let (parent_layout, _) = ProbeLayout::new(40.0, parent_selected);
+        let parent = WuiFixedContainer::new(
+            Box::new(parent_layout),
+            vec![(inner.clone().upcast(), StretchAxis::None)],
+        );
+        parent.allocate(200, 200, -1, None);
+        assert_eq!(inner.imp().selected_proposal.get(), Some(chosen));
+
+        for probe in [
+            ProposalSize::ZERO,
+            ProposalSize::UNSPECIFIED,
+            ProposalSize::INFINITY,
+        ] {
+            let _ = inner.layout_measure(probe);
+            assert_eq!(
+                inner.imp().selected_proposal.get(),
+                Some(chosen),
+                "probe {probe:?} clobbered the selected proposal"
+            );
+        }
+
+        // The subview path keeps the unbounded query unbounded: a maximum
+        // probe reports the natural size, not a 2-billion-pixel answer.
+        let subview = GtkSubView::new(Label::new(Some("abc")).upcast(), StretchAxis::None);
+        let dims = subview.measure(ProposalSize::INFINITY);
+        assert!(dims.size.width.is_finite() && dims.size.height.is_finite());
+        assert!(dims.size.width > 0.0 && dims.size.height > 0.0);
+    }
+
+    /// GTK skips a `size_allocate` whose allocation is unchanged, so a
+    /// changed proposal at equal bounds would silently lose the relayout
+    /// unless the delivery queues it. The parent's new `place` delivers the
+    /// new packet; the child's placement must rerun under it.
+    #[test]
+    fn equal_bounds_changed_proposal_still_relayouts() {
+        init();
+        let inner_placed = Rc::new(RefCell::new(Vec::new()));
+        let inner_layout = ProbeLayout {
+            frame: Rect::from_size(Size::new(10.0, 10.0)),
+            selected: Rc::new(Cell::new(ProposalSize::UNSPECIFIED)),
+            placed: Rc::clone(&inner_placed),
+        };
+        let inner = WuiFixedContainer::new(Box::new(inner_layout), vec![label_child()]);
+
+        let first = ProposalSize::new(Some(64.0), Some(48.0));
+        let second = ProposalSize::new(Some(120.0), Some(48.0));
+        let parent_selected = Rc::new(Cell::new(first));
+        // The frame is identical across both passes — only the proposal moves.
+        let (parent_layout, _) = ProbeLayout::new(40.0, Rc::clone(&parent_selected));
+        let parent = WuiFixedContainer::new(
+            Box::new(parent_layout),
+            vec![(inner.clone().upcast(), StretchAxis::None)],
+        );
+
+        parent.allocate(200, 200, -1, None);
+        assert_eq!(inner_placed.borrow().last().copied(), Some(first));
+
+        // Unrelated probes between placements must not disturb the packet.
+        let _ = inner.layout_measure(ProposalSize::ZERO);
+        let _ = inner.layout_measure(ProposalSize::INFINITY);
+        assert_eq!(inner.imp().selected_proposal.get(), Some(first));
+
+        parent_selected.set(second);
+        parent.queue_allocate();
+        parent.allocate(200, 200, -1, None);
+
+        assert_eq!(inner.imp().selected_proposal.get(), Some(second));
+        assert_eq!(
+            inner_placed.borrow().last().copied(),
+            Some(second),
+            "equal bounds with a changed proposal did not relayout the child"
+        );
+    }
+
+    /// `Spacer` renders through `SpacerLayout`: the container reports the
+    /// minimum length even with zero children, and the widget carries the
+    /// lowest default layout priority so a stack squeezes it first.
+    #[test]
+    fn spacer_reports_min_length_and_lowest_priority() {
+        init();
+        let env = Environment::new();
+        let mut renderer = GtkRenderer::new();
+        let widget =
+            Native::new(waterui_layout::spacer::Spacer::new(10.0)).render(&env, &mut renderer);
+
+        let (min_w, nat_w, ..) = widget.measure(gtk4::Orientation::Horizontal, -1);
+        assert_eq!((min_w, nat_w), (10, 10));
+
+        let subview = GtkSubView::new(widget, StretchAxis::MainAxis);
+        assert_eq!(subview.priority(), i32::MIN);
+    }
+
+    /// The dynamic host reads its layout-facing answers through the live
+    /// child: axis and priority follow whatever content it currently holds,
+    /// and a proposal delivered before a swap is replayed to the replacement.
+    #[test]
+    fn dynamic_host_reports_live_child_traits_and_replays_proposal() {
+        init();
+        let env = Environment::new();
+        let mut renderer = GtkRenderer::new();
+        let (handler, dynamic) = waterui_core::dynamic::Dynamic::new();
+        let host = Native::new(dynamic).render(&env, &mut renderer);
+
+        // Deliver before any content exists: the packet is retained on the host.
+        let chosen = ProposalSize::new(Some(64.0), Some(48.0));
+        deliver_proposal(&host, chosen);
+
+        handler.set(waterui_layout::spacer::Spacer::new(8.0));
+        let context = glib::MainContext::default();
+        while context.iteration(false) {}
+
+        let child = host.first_child().expect("dynamic content not rendered");
+        assert_eq!(
+            query_axis(&host),
+            Some(StretchAxis::MainAxis),
+            "dynamic host did not report the spacer's main-axis stretch"
+        );
+        assert_eq!(query_priority(&host), Some(i32::MIN));
+        assert_eq!(
+            child
+                .downcast_ref::<WuiFixedContainer>()
+                .expect("spacer content is not a layout container")
+                .imp()
+                .selected_proposal
+                .get(),
+            Some(chosen),
+            "replacement child did not inherit the retained proposal"
+        );
+
+        // A non-stretching child flips every live answer back.
+        handler.set(waterui_core::Str::from("text"));
+        while context.iteration(false) {}
+        assert_eq!(query_axis(&host), Some(StretchAxis::None));
+        assert_eq!(query_priority(&host), Some(0));
+    }
+
+    /// The scroll owner's offer: `None` down every scrolling axis, the
+    /// finite viewport extent across each non-scrolling one.
+    #[test]
+    fn scroll_offer_leaves_scrolling_axes_unspecified() {
+        let offer = crate::layout::proposal::scroll_offer(false, true, 320.0, 240.0);
+        assert_eq!(offer.width, Some(320.0));
+        assert_eq!(offer.height, None);
+
+        let both = crate::layout::proposal::scroll_offer(true, true, 320.0, 240.0);
+        assert_eq!((both.width, both.height), (None, None));
+    }
+
+    /// A container hosted inside scroll content — through a transparent
+    /// wrapper — must reconstruct the owner's offer, not its own bounds.
+    #[test]
+    fn scroll_axes_marker_reaches_wrapped_container() {
+        init();
+        let inner = WuiFixedContainer::new(Box::new(VStackLayout::default()), vec![label_child()]);
+        let wrapper = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        wrapper.append(&inner);
+        crate::layout::proposal::set_scroll_axes(wrapper.upcast_ref(), false, true);
+
+        assert_eq!(
+            crate::layout::proposal::scroll_axes_for(inner.upcast_ref()),
+            Some((false, true)),
+            "scroll annotation did not reach through the transparent wrapper"
+        );
+    }
+
+    /// A transparent wrapper must deliver a measurement probe to its content
+    /// untouched: `None` stays `None`, `f32::INFINITY` stays unbounded, and
+    /// the content's explicit guides come back offset by its margins —
+    /// GTK's integer `measure` round trip drops all three.
+    #[test]
+    fn transparent_wrapper_preserves_raw_probe_and_guides() {
+        init();
+        let (inner_layout, _) =
+            ProbeLayout::new(10.0, Rc::new(Cell::new(ProposalSize::UNSPECIFIED)))
+                .with_vertical_guide(VerticalAlignment::Center, 12.0);
+        let probed = inner_layout.probes();
+        let inner = WuiFixedContainer::new(Box::new(inner_layout), vec![label_child()]);
+        inner.set_margin_top(4);
+        inner.set_margin_bottom(4);
+
+        let wrapper = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        wrapper.append(&inner);
+        transparent_to_content(wrapper.upcast_ref(), inner.upcast_ref());
+
+        let subview = GtkSubView::new(wrapper.upcast(), StretchAxis::None);
+        let dimensions = subview.measure(ProposalSize::new(Some(f32::INFINITY), Some(64.0)));
+
+        assert_eq!(
+            probed.borrow().last().copied(),
+            Some(ProposalSize::new(Some(f32::INFINITY), Some(56.0))),
+            "the raw probe did not reach the wrapped container"
+        );
+        assert_eq!(
+            dimensions.explicit_vertical(VerticalAlignment::Center),
+            Some(16.0),
+            "the explicit guide did not survive the transparent hop"
+        );
+    }
+
+    /// A wrapped `Spacer` keeps answering through the wrapper: the live axis
+    /// and priority read through to the content, while an explicit priority
+    /// recorded on the wrapper itself still wins.
+    #[test]
+    fn transparent_wrapper_forwards_axis_and_priority() {
+        init();
+        let env = Environment::new();
+        let mut renderer = GtkRenderer::new();
+        let (content, axis) = renderer.render_any_with_axis(
+            AnyView::new(Native::new(waterui_layout::spacer::Spacer::new(8.0))),
+            &env,
+        );
+        assert_eq!(axis, StretchAxis::MainAxis);
+
+        let wrapper = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        wrapper.append(&content);
+        transparent_to_content(wrapper.upcast_ref(), &content);
+
+        assert_eq!(
+            query_axis(wrapper.upcast_ref()),
+            Some(StretchAxis::MainAxis),
+            "the wrapper did not forward the spacer's stretch axis"
+        );
+        assert_eq!(
+            query_priority(wrapper.upcast_ref()),
+            Some(i32::MIN),
+            "the wrapper did not forward the spacer's default priority"
+        );
+
+        // An explicit override on the wrapper beats the forwarded answer.
+        set_layout_priority(wrapper.upcast_ref(), 7);
+        assert_eq!(query_priority(wrapper.upcast_ref()), Some(7));
+    }
+
+    /// The delivered selected proposal must undergo the same margin
+    /// transformation measurement applies: a margined child retains and
+    /// places under the content-box packet, not the margin-box one.
+    #[test]
+    fn delivered_proposal_shrinks_by_child_margins() {
+        init();
+        let chosen = ProposalSize::new(Some(100.0), Some(80.0));
+        let (inner_layout, inner_placed) =
+            ProbeLayout::new(10.0, Rc::new(Cell::new(ProposalSize::UNSPECIFIED)));
+        let inner = WuiFixedContainer::new(Box::new(inner_layout), vec![label_child()]);
+        inner.set_margin_start(10);
+        inner.set_margin_end(10);
+        inner.set_margin_top(4);
+        inner.set_margin_bottom(4);
+
+        let parent_selected = Rc::new(Cell::new(chosen));
+        let (parent_layout, _) = ProbeLayout::new(40.0, parent_selected);
+        let parent = WuiFixedContainer::new(
+            Box::new(parent_layout),
+            vec![(inner.clone().upcast(), StretchAxis::None)],
+        );
+
+        parent.allocate(200, 200, -1, None);
+
+        assert_eq!(
+            inner.width(),
+            20,
+            "allocation removed horizontal margins twice"
+        );
+        assert_eq!(
+            inner.height(),
+            32,
+            "allocation removed vertical margins twice"
+        );
+        let origin = inner
+            .compute_point(&parent, &gtk4::graphene::Point::zero())
+            .expect("child and parent share a widget tree");
+        assert_eq!((origin.x(), origin.y()), (10.0, 4.0));
+
+        let expected = ProposalSize::new(Some(80.0), Some(72.0));
+        assert_eq!(
+            inner.imp().selected_proposal.get(),
+            Some(expected),
+            "the retained packet kept margin-box geometry"
+        );
+        assert_eq!(
+            inner_placed.borrow().last().copied(),
+            Some(expected),
+            "place ran under a different proposal than measurement"
+        );
+    }
+
+    /// The list row's chrome is real siblings, not transparency: the
+    /// forwarded packet must shrink by the visible siblings' natural extents
+    /// and the box's spacing — the slot the content is actually allocated.
+    #[test]
+    fn row_chrome_negotiates_the_content_slot() {
+        init();
+        let (inner_layout, _) =
+            ProbeLayout::new(10.0, Rc::new(Cell::new(ProposalSize::UNSPECIFIED)));
+        let content = WuiFixedContainer::new(Box::new(inner_layout), vec![label_child()]);
+        content.set_hexpand(true);
+
+        let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        row.set_margin_start(12);
+        row.set_margin_end(12);
+        row.set_margin_top(8);
+        row.set_margin_bottom(8);
+        row.append(&content);
+        let button = gtk4::Button::from_icon_name("edit-delete-symbolic");
+        row.append(&button);
+        forward_box_content_slot(row.upcast_ref(), content.upcast_ref());
+
+        deliver_proposal(
+            row.upcast_ref(),
+            row_offer(gtk4::Orientation::Vertical, 400.0),
+        );
+
+        let (_, button_natural, ..) = button.measure(gtk4::Orientation::Horizontal, -1);
+        let expected = ProposalSize::new(
+            Some(400.0 - 24.0 - 8.0 - logical_extent(button_natural.max(0))),
+            None,
+        );
+        assert_eq!(
+            content.imp().selected_proposal.get(),
+            Some(expected),
+            "the row forwarded its whole margin box, chrome included"
+        );
+
+        // Chrome that hides frees the slot again — the row re-runs the
+        // negotiation against the packet already in force.
+        button.set_visible(false);
+        reoffer_proposal(row.upcast_ref());
+        assert_eq!(
+            content.imp().selected_proposal.get(),
+            Some(ProposalSize::new(Some(400.0 - 24.0), None)),
+            "a hidden sibling still ate into the content's slot"
+        );
+    }
+
+    /// A row's scroll marker must shape the FIRST allocation pass: the
+    /// layout container inside reconstructs the owner's raw scroll axis —
+    /// `None` down the scrolling axis — instead of playing its own finite
+    /// bounds back as the negotiated proposal.
+    #[test]
+    fn scroll_marker_shapes_first_allocation_pass() {
+        init();
+        let (inner_layout, inner_placed) =
+            ProbeLayout::new(10.0, Rc::new(Cell::new(ProposalSize::UNSPECIFIED)));
+        let inner = WuiFixedContainer::new(Box::new(inner_layout), vec![label_child()]);
+
+        let row = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        row.append(&inner);
+        set_scroll_axes(row.upcast_ref(), false, true);
+
+        row.allocate(200, 50, -1, None);
+
+        let last = inner_placed.borrow().last().copied();
+        assert_eq!(
+            last.map(|proposal| proposal.width),
+            Some(Some(200.0)),
+            "first-pass offer did not carry the cross-axis extent"
+        );
+        assert_eq!(
+            last.map(|proposal| proposal.height),
+            Some(None),
+            "the scrolling axis arrived bounded on the first pass"
+        );
+    }
+
+    /// GTK already includes native-leaf margins in sizes and baselines;
+    /// the raw bridge must not count or subtract them a second time.
+    #[test]
+    fn leaf_measurement_accounts_for_margins() {
+        init();
+        let label = Label::new(Some("abc"));
+        label.set_margin_start(10);
+        label.set_margin_end(10);
+        label.set_margin_top(4);
+        label.set_margin_bottom(4);
+        let subview = GtkSubView::new(label.clone().upcast(), StretchAxis::None);
+
+        let (min_w, nat_w, ..) = label.measure(gtk4::Orientation::Horizontal, -1);
+        let (min_h, nat_h, ..) = label.measure(gtk4::Orientation::Vertical, -1);
+
+        let generous = subview.measure(ProposalSize::new(Some(500.0), Some(500.0)));
+        assert_eq!(generous.size.width, logical_extent(nat_w));
+        assert_eq!(generous.size.height, logical_extent(nat_h));
+
+        // GTK minimum sizes already include margins even for tight offers.
+        let tight = subview.measure(ProposalSize::new(Some(30.0), Some(10.0)));
+        let expected_w = 30.0_f32
+            .min(logical_extent(nat_w))
+            .max(logical_extent(min_w.min(nat_w)));
+        let expected_h = 10.0_f32
+            .min(logical_extent(nat_h))
+            .max(logical_extent(min_h.min(nat_h)));
+        assert_eq!(tight.size.width, expected_w);
+        assert_eq!(tight.size.height, expected_h);
+    }
+
+    /// The dynamic host's raw probe reads through to the live child: after a
+    /// swap the host measures as the new content, not as the empty box it
+    /// was at render time.
+    #[test]
+    fn dynamic_host_measures_the_live_child() {
+        init();
+        let env = Environment::new();
+        let mut renderer = GtkRenderer::new();
+        let (handler, dynamic) = waterui_core::dynamic::Dynamic::new();
+        let host = Native::new(dynamic).render(&env, &mut renderer);
+
+        let subview = GtkSubView::new(host.clone(), StretchAxis::None);
+        handler.set(waterui_layout::spacer::Spacer::new(8.0));
+        let context = glib::MainContext::default();
+        while context.iteration(false) {}
+
+        let dimensions = subview.measure(ProposalSize::UNSPECIFIED);
+        assert_eq!(subview.stretch_axis(), StretchAxis::MainAxis);
+        assert_eq!(
+            (dimensions.size.width, dimensions.size.height),
+            (8.0, 8.0),
+            "the host measured itself instead of the live child"
         );
     }
 }

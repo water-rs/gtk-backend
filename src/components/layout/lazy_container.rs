@@ -16,6 +16,7 @@ use waterui_layout::stack::{LazyStackAxis, lazy_stack_axis};
 use crate::component::GtkComponent;
 use crate::components::fixed_container_widget::WuiFixedContainer;
 use crate::components::layout::keyed_model::{KeyedModel, list_item_id};
+use crate::layout::proposal::set_scroll_axes;
 use crate::renderer::GtkRenderer;
 use crate::util::store_watcher_guard;
 
@@ -56,6 +57,10 @@ impl GtkComponent for Native<LazyContainer> {
                 spacing.get(),
                 gtk_align_from_vertical(*alignment),
             ),
+        };
+        let (scrolls_h, scrolls_v) = match orientation {
+            Orientation::Vertical => (false, true),
+            _ => (true, false),
         };
 
         // GtkListView exposes no inter-row spacing property (that one is
@@ -104,6 +109,13 @@ impl GtkComponent for Native<LazyContainer> {
                     }
                 }
                 list_item.set_child(Some(&widget));
+                // The list owns the row's scrolling: a layout container in
+                // the row reconstructs the raw scroll offer from this marker
+                // and its own allocation inside its `size_allocate` vfunc —
+                // strictly before it allocates its children, on the first
+                // pass and every pass after. There is no `size-allocate`
+                // signal in GTK4 to hook from the outside.
+                set_scroll_axes(&widget, scrolls_h, scrolls_v);
             } else {
                 list_item.set_child(Option::<&Widget>::None);
             }
