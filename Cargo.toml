@@ -18,23 +18,23 @@ categories = ["gui"]
 # is Linux-only work, and the Linux entry below turns it back on.
 # Framework requirements retain one registry identity. The root patch table
 # selects the unreleased compatible revision for standalone development.
-waterui-shape = { version = "0.1.2", default-features = false }
+waterui-shape = { version = "0.5.0", default-features = false }
 kurbo = "0.13"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-waterui = { version = "0.4.1" }
-waterui-core = { version = "0.3.2" }
-waterui-backend-core = { version = "0.1.2", features = ["widgets", "gestures"] }
-waterui-layout = { version = "0.3.2" }
-waterui-locale = { version = "0.1.2" }
-waterui-navigation = { version = "0.3.2" }
-waterui-text = { version = "0.4.1" }
-waterui-icon = { version = "0.3.2" }
-waterui-controls = { version = "0.3.2" }
-waterui-graphics = { version = "0.4.1", features = ["gpu", "cpu-scene"] }
-waterui-shape = { version = "0.1.2" }
-waterui-form = { version = "0.3.2" }
-waterui-webview = { version = "0.4.1", optional = true }
+waterui = { version = "0.5.0" }
+waterui-core = { version = "0.5.0" }
+waterui-backend-core = { version = "0.5.0", features = ["widgets", "gestures"] }
+waterui-layout = { version = "0.5.0" }
+waterui-locale = { version = "0.5.0" }
+waterui-navigation = { version = "0.5.0" }
+waterui-text = { version = "0.5.0" }
+waterui-icon = { version = "0.5.0" }
+waterui-controls = { version = "0.5.0" }
+waterui-graphics = { version = "0.5.0", features = ["gpu", "cpu-scene"] }
+waterui-shape = { version = "0.5.0" }
+waterui-form = { version = "0.5.0" }
+waterui-webview = { version = "0.5.0", optional = true }
 nami = "0.11.2"
 # Insertion order is the eviction order for the split destination cache.
 indexmap = "2"
@@ -48,7 +48,7 @@ native-executor = "0.8.0"
 # 4.14 is the floor because clipping to an arbitrary path is
 # `gtk_snapshot_push_fill`, which arrived there.
 gtk4 = { version = "0.11", features = ["v4_14"] }
-waterui-assets = { version = "0.1.2" }
+waterui-assets = { version = "0.5.0" }
 gdk4 = { version = "0.11", features = ["v4_14"] }
 glib = "0.22"
 # Chromium's own physical-key table, used to name a GDK hardware keycode in the
@@ -65,27 +65,37 @@ libloading = "0.9"
 # Pin the standalone development graph at its root so consumers can select
 # one coherent framework source through their own root patch table.
 [patch.crates-io]
-waterui = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
-waterui-assets = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
-waterui-backend-core = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
-waterui-controls = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
-waterui-core = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
-waterui-form = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
-waterui-graphics = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
-waterui-icon = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
-waterui-layout = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
-waterui-locale = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
-waterui-macros = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
-waterui-navigation = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
-waterui-shape = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
-waterui-text = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
-waterui-webview = { git = "https://github.com/water-rs/waterui", rev = "58eea5c81e0d7bfe6f6902f638175650637d7684" }
+waterui = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-assets = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-assets-core = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-assets-macros = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-assets-planner = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-backend-core = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-controls = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-core = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-dylib = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-form = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-graphics = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-icon = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-internal = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-layout = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-locale = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-macros = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-media = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-navigation = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-shape = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-text = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-url = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-video = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-watcher-set = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
+waterui-webview = { git = "https://github.com/water-rs/waterui", rev = "8a5c93a4f571db43713c26710336cc3b098d91f1" }
 
 [build-dependencies]
 pkg-config = "0.3"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-waterui-webview = { version = "0.4.1", features = ["conformance"] }
+waterui-webview = { version = "0.5.0", features = ["conformance"] }
 # The concrete filters the rendering tests run through `AppliedFilter`.
 filtrate = "0.2"
 
