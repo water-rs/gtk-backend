@@ -239,20 +239,25 @@ fn style_to_markup_attrs(style: &Style, env: &Environment, sensitive: bool) -> S
     attrs
 }
 
-/// Emits a Pango color attribute pair. Pango markup carries opacity as a
-/// separate `name_alpha` attribute — writing only the color would silently
-/// render a partial or fully transparent color opaque.
+/// Emits a Pango color attribute. Opacity is carried inside the color spec
+/// as `#RRGGBBAA` (Pango 1.38+): the `alpha`/`background_alpha` attributes
+/// reject zero, so an 8-digit hex is the only markup form covering the full
+/// `[0, 1]` range.
 fn emit_color_attrs(attrs: &mut String, name: &str, color: ResolvedColor) {
-    let (_, _, _, alpha) = resolved_color_to_rgba8(color);
-    let _ = write!(attrs, " {name}=\"{}\"", resolved_color_to_hex(color));
+    let (red, green, blue, alpha) = resolved_color_to_rgba8(color);
     if alpha < 1.0 {
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
             reason = "the alpha channel is clamped to [0.0, 1.0] before scaling"
         )]
-        let alpha = (alpha * 65535.0).round() as u32;
-        let _ = write!(attrs, " {name}_alpha=\"{alpha}\"");
+        let alpha = (alpha * 255.0).round() as u8;
+        let _ = write!(
+            attrs,
+            " {name}=\"#{red:02X}{green:02X}{blue:02X}{alpha:02X}\""
+        );
+    } else {
+        let _ = write!(attrs, " {name}=\"{}\"", resolved_color_to_hex(color));
     }
 }
 
@@ -391,7 +396,7 @@ mod tests {
         let markup = styled_to_markup(StyledStr::from("body"), &env, true);
         assert_eq!(
             parsed_int(&markup, gtk4::pango::AttrType::ForegroundAlpha),
-            Some(32768)
+            Some(0x8080)
         );
 
         let env = env_with_foreground(resolved_u8(255, 255, 255, 0.0));
@@ -417,7 +422,7 @@ mod tests {
         );
         assert_eq!(
             parsed_int(&markup, gtk4::pango::AttrType::ForegroundAlpha),
-            Some(16384)
+            Some(0x4040)
         );
     }
 
@@ -436,7 +441,7 @@ mod tests {
         );
         assert_eq!(
             parsed_int(&markup, gtk4::pango::AttrType::BackgroundAlpha),
-            Some(32768)
+            Some(0x8080)
         );
     }
 
