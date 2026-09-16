@@ -9,7 +9,9 @@ max-threads = 1
 # `WebKitGTK` tests each spawn a full web/network process stack over the one
 # shared dbus session and display. A sibling aborting mid-run leaves orphaned
 # `WebKit` processes that can wedge a concurrent spawn — run them serially
-# like the windowed focus tests.
+# like the windowed focus tests. They also get a process-level watchdog: a
+# synchronous native stall cannot be reached by the in-test async bound, so
+# the runner terminates the process at 60 s and fails the test.
 [test-groups.webview]
 max-threads = 1
 
@@ -20,3 +22,4 @@ test-group = 'windowed'
 [[profile.default.overrides]]
 filter = 'test(/webview_system_tests::/)'
 test-group = 'webview'
+slow-timeout = { period = "30s", terminate-after = 2 }
