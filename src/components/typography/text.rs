@@ -4,6 +4,7 @@ use gtk4::prelude::*;
 use gtk4::{Label, Widget};
 use nami::Signal;
 use std::fmt::Write;
+use waterui::theme::{color::Foreground, installed_color_signal};
 use waterui_core::layout::HorizontalAlignment;
 use waterui_core::{Environment, Native};
 use waterui_text::TextConfig;
@@ -67,8 +68,26 @@ impl GtkComponent for Native<TextConfig> {
             }
         });
 
-        // Store the watcher guard to keep it alive
-        store_watcher_guards(&label, vec![guard, alignment_guard]);
+        // Repaint when the environment `Foreground` token changes: the theme
+        // mutates the slot's signal on scheme switches and `.foreground()`
+        // overrides install into the same slot.
+        let mut guards = vec![guard, alignment_guard];
+        if let Some(foreground) = installed_color_signal::<Foreground>(env) {
+            let label = label.clone();
+            let env = env.clone();
+            let content = config.content.clone();
+            let paragraph_alignment = config.paragraph_alignment.clone();
+            guards.push(foreground.watch(move |_ctx| {
+                let label = label.clone();
+                let env = env.clone();
+                let content = content.clone();
+                let paragraph_alignment = paragraph_alignment.clone();
+                glib::idle_add_local_once(move || {
+                    apply_styled_content(&label, content.get(), paragraph_alignment.get(), &env);
+                });
+            }));
+        }
+        store_watcher_guards(&label, guards);
 
         label.upcast()
     }
@@ -161,9 +180,18 @@ fn style_to_markup_attrs(style: &Style, env: &Environment) -> String {
         attrs.push_str(" strikethrough=\"true\"");
     }
 
-    if let Some(foreground) = &style.foreground {
-        let resolved = foreground.resolve(env).get();
-        let color = resolved_color_to_hex(resolved);
+    // `Foreground` is the environment's default text color: the theme installs
+    // it from the platform palette and `.foreground()` overrides the same slot,
+    // so chunks without an explicit color must still honor it. GTK's CSS knows
+    // nothing of the environment — the resolved color must be emitted. When no
+    // slot is installed at all the label keeps GTK's own default color.
+    let foreground = style
+        .foreground
+        .as_ref()
+        .map(|foreground| foreground.resolve(env).get())
+        .or_else(|| installed_color_signal::<Foreground>(env).map(|signal| signal.get()));
+    if let Some(foreground) = foreground {
+        let color = resolved_color_to_hex(foreground);
         let _ = write!(attrs, " foreground=\"{color}\"");
     }
 
