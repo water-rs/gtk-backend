@@ -176,6 +176,14 @@ fn asset_origin_fetch_diagnostic() {
                     .await
                     .expect("the fetch probe itself resolves");
                 eprintln!("fetch probe: {fetched}");
+                assert!(
+                    page_state.contains("waterui://localhost|true|false"),
+                    "page state: {page_state}"
+                );
+                assert!(
+                    fetched.starts_with("\"OK 200") || fetched.starts_with("OK 200"),
+                    "fetch probe: {fetched}; page state: {page_state}"
+                );
             },
         ))
         .expect("the diagnostic flow must finish inside its timeout");

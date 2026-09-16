@@ -388,10 +388,6 @@ mod webkitgtk {
             manager: *mut WebKitSecurityManager,
             scheme: *const c_char,
         );
-        fn webkit_security_manager_register_uri_scheme_as_local(
-            manager: *mut WebKitSecurityManager,
-            scheme: *const c_char,
-        );
         fn webkit_security_manager_register_uri_scheme_as_cors_enabled(
             manager: *mut WebKitSecurityManager,
             scheme: *const c_char,
@@ -580,8 +576,12 @@ mod webkitgtk {
             );
         }
 
-        // `secure` and `local` give the origin `isSecureContext` and
-        // same-origin storage; `cors_enabled` keeps `fetch` honouring CORS.
+        // `secure` gives the origin `isSecureContext`; `cors_enabled` keeps
+        // `fetch` honouring CORS. `local` is deliberately absent: it classifies
+        // the scheme like `file://` — per-document sandboxed origins that break
+        // same-origin `fetch` ("Load failed") and `pushState` ("sandboxed
+        // document") — while the asset origin needs ordinary tuple-origin
+        // semantics, which is also what grants same-origin storage.
         //
         // SAFETY: `webkit_web_context_get_security_manager` on a live context
         // returns its live manager — a null return is caught by the assert;
@@ -593,7 +593,6 @@ mod webkitgtk {
                 "webkit_web_context_get_security_manager returned null (fast-fail)"
             );
             webkit_security_manager_register_uri_scheme_as_secure(manager, scheme.as_ptr());
-            webkit_security_manager_register_uri_scheme_as_local(manager, scheme.as_ptr());
             webkit_security_manager_register_uri_scheme_as_cors_enabled(manager, scheme.as_ptr());
         }
     }
