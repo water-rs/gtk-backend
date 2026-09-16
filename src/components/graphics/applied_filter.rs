@@ -171,12 +171,12 @@ pin_project_lite::pin_project! {
         context: gdk4::GLContext,
         #[pin]
         future: F,
-        /// Keeps the GL runtime libraries behind the entry points the
-        /// future's captured wgpu objects call mapped until the future —
-        /// and everything it owns — has dropped. A device request or filter
-        /// setup polled after `init_wgpu`/`init_filter` returned otherwise
-        /// jumps into code `dlclose` already unmapped (the nightly filter
-        /// crash). Declared last so it is the last field dropped.
+        // Keeps the GL runtime libraries behind the entry points the
+        // future's captured wgpu objects call mapped until the future —
+        // and everything it owns — has dropped. A device request or filter
+        // setup polled after `init_wgpu`/`init_filter` returned otherwise
+        // jumps into code `dlclose` already unmapped (the nightly filter
+        // crash). Declared last so it is the last field dropped.
         _gl_resolver: Rc<GlProcResolver>,
     }
 }
