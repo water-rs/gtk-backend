@@ -10,11 +10,12 @@
 # real focus when a WM is running. The workflow wraps this script in
 #   xvfb-run -a dbus-run-session -- sh -c 'openbox & sleep 2; exec …'
 #
-# Failure means: the launcher died or never raised a window, the capture
-# stayed unsettled past the deadline, the frame is blank, or the frame
-# differs from its golden beyond the diff budget. A `<name>.skip` marker
-# beside a golden disables the pixel diff for that example (content check
-# only); `e2e/skip.txt` excludes examples that cannot run at all.
+# Failure means: the launcher died or never raised a window, the example
+# never reached render readiness, the capture stayed unsettled past the
+# deadline, the frame is blank, or the frame differs from its golden beyond
+# the diff budget. A `<name>.skip` marker beside a golden disables the pixel
+# diff for that example (content check only); `e2e/skip.txt` excludes
+# examples that cannot run at all.
 #
 # Env: WATERUI_DIR, EXAMPLE, EXAMPLE_LOG_DIR, SHOTS_DIR, METRICS_DIR;
 # optional BASELINES_DIR (default e2e/goldens in this repo), RECORD=1 with
@@ -32,6 +33,22 @@ example="${EXAMPLE:?EXAMPLE must name the example to run}"
 record="${RECORD:-0}"
 record_dir="${RECORD_DIR:-${repo_root}/e2e-candidates}"
 
+# Readiness configuration per example. The pattern must be an event the
+# consumed source already emits — instrumentation adds only the per-surface
+# completion events it sequences against. Minimums keep the gate honest
+# where the example is known to produce GPU widgets: an empty created set
+# would satisfy membership vacuously and read missing instrumentation as
+# readiness. Examples with no GPU content take the zero defaults and the
+# gate stays vacuous, as before.
+case "${example}" in
+    map)    READINESS_PATTERN="activated prepared GPU map"
+            MIN_GPU_SURFACES=1; MIN_FILTER_HOSTS=0 ;;
+    stress) READINESS_PATTERN=""
+            MIN_GPU_SURFACES=1; MIN_FILTER_HOSTS=1 ;;
+    *)      READINESS_PATTERN=""
+            MIN_GPU_SURFACES=0; MIN_FILTER_HOSTS=0 ;;
+esac
+
 mkdir -p "${log_dir}" "${shots_dir}" "${record_dir}" "${metrics_dir}"
 
 # The generated backend crate shares waterui's dependency graph; the rust
@@ -46,6 +63,7 @@ ulimit -c 0
 # The window wait starts after `water package` finishes, so it only covers
 # process spawn to first mapped toplevel — a healthy app maps in seconds.
 WINDOW_APPEAR_DEADLINE=120
+READINESS_DEADLINE=90         # per-surface render completion before capture
 SETTLE_DEADLINE=90            # frames stable before capture
 SETTLE_BUDGET=0.005           # normalized RMSE between consecutive frames
 DIFF_BUDGET=0.02              # normalized RMSE against the golden
@@ -141,7 +159,7 @@ run_example() {
     # Backend diagnostics are emitted through `tracing`; without RUST_LOG the
     # subscriber only shows errors, so per-example GPU lifecycle detail needs
     # an explicit opt-in here. Output lands in the example's launcher log.
-    RUST_LOG="${RUST_LOG:-info,waterui_gtk=debug,waterui_graphics=debug,waterui_media=debug,waterui::gtk::layout=debug}" \
+    RUST_LOG="${RUST_LOG:-info,waterui_gtk=debug,waterui_graphics=debug,waterui_media=debug,waterui_map_gpu=debug,waterui::gtk::layout=debug}" \
         RUST_BACKTRACE=1 \
         WATERUI_GTK_LAYOUT_DEBUG=1 \
         setsid "${bin}" >>"${log}" 2>&1 &
@@ -165,6 +183,82 @@ run_example() {
         stop_launcher "${launcher}"
         record_metric "${name}" "${binary_bytes}" "" "" ""
         echo "FAIL ${name}: no window within ${WINDOW_APPEAR_DEADLINE}s"
+        return 1
+    fi
+
+    # Readiness gate. The backend emits a completion event only after a
+    # surface's full render path returns — never at frame entry — keyed by
+    # the widget's own pointer, so the gate is set membership of unique
+    # identities rather than an event count one widget can satisfy alone.
+    # Run 35095065215 showed why this precedes the settle loop: two
+    # identical all-black captures "settled" ~3 s after the window mapped,
+    # while every surface had been created and none had completed a frame.
+    created_surface_ids() {
+        grep -oE 'create GLArea widget surface_id=[0-9]+' "${log}" | grep -oE '[0-9]+$' | sort -u
+    }
+    rendered_surface_ids() {
+        grep -oE 'surface render complete surface_id=[0-9]+' "${log}" | grep -oE '[0-9]+$' | sort -u
+    }
+    created_host_ids() {
+        grep -oE 'create filter host host_id=[0-9]+' "${log}" | grep -oE '[0-9]+$' | sort -u
+    }
+    presented_host_ids() {
+        grep -oE 'filtered frame presented host_id=[0-9]+' "${log}" | grep -oE '[0-9]+$' | sort -u
+    }
+
+    readiness_met() {
+        (($(created_surface_ids | wc -l) >= MIN_GPU_SURFACES)) || return 1
+        (($(created_host_ids | wc -l) >= MIN_FILTER_HOSTS)) || return 1
+        comm -23 <(created_surface_ids) <(rendered_surface_ids) | grep -q . && return 1
+        comm -23 <(created_host_ids) <(presented_host_ids) | grep -q . && return 1
+        # Content readiness is sequenced, not just present: map logs
+        # "activated prepared GPU map" while building the very frame that
+        # consumes the prepared scene, so a completion after that line
+        # observes a frame submitted with the activated scene. Submission
+        # is all the gate observes — the settle loop and golden diff below
+        # remain the visual check.
+        if [[ -n ${READINESS_PATTERN} ]]; then
+            awk -v pat="${READINESS_PATTERN}" '
+                $0 ~ pat { armed = 1; next }
+                armed && /surface render complete surface_id=/ { hit = 1 }
+                END { exit(hit ? 0 : 1) }
+            ' "${log}" || return 1
+        fi
+        return 0
+    }
+
+    # Poll on the same 3 s cadence the settle loop uses; nothing sleeps
+    # waiting for content, and no pixel statistic participates here.
+    local ready=0
+    deadline=$((SECONDS + READINESS_DEADLINE))
+    while ((SECONDS < deadline)); do
+        if readiness_met; then
+            ready=1
+            break
+        fi
+        sleep 3
+    done
+
+    if ((!ready)); then
+        # Bounded final capture banked for review — an unresolved id bounds
+        # where to look (hidden/offscreen widgets may legitimately never
+        # render); it is diagnostic evidence, not by itself proof of a
+        # runtime fault, but this example cannot be accepted on its frames.
+        timeout "${CAPTURE_TIMEOUT}" import -window "${win}" "${shot}" >>"${log}" 2>&1 || true
+        if ((record)) && [[ -s ${shot} ]]; then
+            cp "${shot}" "${record_dir}/${name}.png"
+        fi
+        local n_surfaces n_hosts unresolved_surfaces unresolved_hosts detail
+        n_surfaces=$(created_surface_ids | wc -l | tr -d ' ')
+        n_hosts=$(created_host_ids | wc -l | tr -d ' ')
+        unresolved_surfaces=$(comm -23 <(created_surface_ids) <(rendered_surface_ids) | tr '\n' ' ')
+        unresolved_hosts=$(comm -23 <(created_host_ids) <(presented_host_ids) | tr '\n' ' ')
+        detail="observed surfaces=${n_surfaces} hosts=${n_hosts}; unresolved surface_ids=[${unresolved_surfaces% }] host_ids=[${unresolved_hosts% }]"
+        [[ -n ${READINESS_PATTERN} ]] \
+            && detail="${detail}, sequence '${READINESS_PATTERN}' + render-complete unmet"
+        stop_launcher "${launcher}"
+        record_metric "${name}" "${binary_bytes}" "" "" "$((window_ms - launch_ms))"
+        echo "FAIL ${name}: readiness deadline ${READINESS_DEADLINE}s reached (${detail})"
         return 1
     fi
 

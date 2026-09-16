@@ -118,6 +118,10 @@ struct GpuState {
     redraw_handle: RedrawHandle,
     env: Environment,
 
+    /// Count of frames that completed the full render path for this surface;
+    /// the e2e readiness gate sequences per-surface completion events with it.
+    frames_completed: u64,
+
     // Used only for querying framebuffer properties.
     glow: Option<Rc<glow::Context>>,
     /// Owns the GL runtime libraries behind every entry point the glow
@@ -186,6 +190,7 @@ impl GpuState {
             env,
             glow: None,
             gl_resolver: None,
+            frames_completed: 0,
         }
     }
 }
@@ -914,6 +919,13 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     st.last_size = Some(size);
     st.gpu_surface = Some(gpu_surface);
 
+    st.frames_completed += 1;
+    tracing::debug!(
+        "[gtk-gpu] surface render complete surface_id={} seq={}",
+        area.as_ptr() as usize,
+        st.frames_completed
+    );
+
     // Prevent GTK from drawing anything else for this GLArea.
     let _ = msaa_samples;
     needs_redraw
@@ -1125,8 +1137,11 @@ impl SurfaceInputSink for GpuSurfaceInput {
 }
 
 pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget {
-    tracing::debug!("[gtk-gpu] create GLArea widget");
     let area = gtk4::GLArea::new();
+    tracing::debug!(
+        "[gtk-gpu] create GLArea widget surface_id={}",
+        area.as_ptr() as usize
+    );
     apply_stretch_sizing(&area, &gpu_surface);
     area.set_visible(true);
     area.set_can_target(true);
