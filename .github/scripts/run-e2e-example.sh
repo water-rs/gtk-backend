@@ -16,6 +16,8 @@
 #   * Examples may declare a content-readiness pattern (READINESS_PATTERN)
 #     that must be followed, in log order, by a render-complete event — for
 #     `map` that is waterui-map-gpu's own "activated prepared GPU map".
+#     Completion observes a submitted frame, not its contents; the banked
+#     capture remains the human's check on what actually presented.
 #   * The deadline failing is an explicit FAIL listing the unresolved ids.
 #     Hidden or offscreen widgets may legitimately never render, so an
 #     unresolved id bounds where to look — it is diagnostic evidence, not
@@ -45,8 +47,12 @@ record_dir="${RECORD_DIR:-${repo_root}/e2e-candidates}"
 # the exact consumed source already emits — instrumentation adds only the
 # per-surface completion events it sequences against.
 case "${example}" in
-    map) READINESS_PATTERN="${READINESS_PATTERN:-activated prepared GPU map}" ;;
-    *)   READINESS_PATTERN="${READINESS_PATTERN:-}" ;;
+    map)    READINESS_PATTERN="${READINESS_PATTERN:-activated prepared GPU map}"
+            MIN_GPU_SURFACES=1; MIN_FILTER_HOSTS=0 ;;
+    stress) READINESS_PATTERN="${READINESS_PATTERN:-}"
+            MIN_GPU_SURFACES=1; MIN_FILTER_HOSTS=1 ;;
+    *)      READINESS_PATTERN="${READINESS_PATTERN:-}"
+            MIN_GPU_SURFACES=1; MIN_FILTER_HOSTS=0 ;;
 esac
 
 mkdir -p "${log_dir}" "${shots_dir}" "${record_dir}" "${metrics_dir}"
@@ -185,14 +191,21 @@ run_example() {
     }
 
     readiness_met() {
+        # An empty created set satisfies membership vacuously and would read
+        # missing instrumentation as readiness — require the identities this
+        # example is known to produce before accepting anything.
+        (($(created_surface_ids | wc -l) >= MIN_GPU_SURFACES)) || return 1
+        (($(created_host_ids | wc -l) >= MIN_FILTER_HOSTS)) || return 1
         # Every GL surface created so far must have completed >=1 frame.
         comm -23 <(created_surface_ids) <(rendered_surface_ids) | grep -q . && return 1
         # Every filter host created so far must have presented >=1 filtered frame.
         comm -23 <(created_host_ids) <(presented_host_ids) | grep -q . && return 1
         # Content readiness is sequenced, not just present: map logs
         # "activated prepared GPU map" while building the very frame that
-        # consumes the prepared scene, so only a render-complete event after
-        # that line proves the activated content reached the framebuffer.
+        # consumes the prepared scene, so a render-complete after that line
+        # observes a frame submitted with the activated scene. Submission is
+        # all this gate can observe — what the frame looks like is what the
+        # banked capture is for.
         if [[ -n ${READINESS_PATTERN} ]]; then
             awk -v pat="${READINESS_PATTERN}" '
                 $0 ~ pat { armed = 1; next }
@@ -215,8 +228,10 @@ run_example() {
 
     # One bounded capture at the readiness event, or of the final frame when
     # the deadline fired — banked for human review either way. The image is
-    # evidence, never the acceptance signal.
-    timeout "${CAPTURE_TIMEOUT}" import -window "${win}" "${shot}" >>"${log}" 2>&1 || true
+    # evidence, never the acceptance signal, but a failed capture is a failed
+    # run: a readiness PASS must carry the frame it claims.
+    local capture_ok=1
+    timeout "${CAPTURE_TIMEOUT}" import -window "${win}" "${shot}" >>"${log}" 2>&1 || capture_ok=0
 
     # Read RSS at the readiness frame, then stop the app. A process that
     # already crashed has no status to read and is a failure even when a
@@ -240,11 +255,18 @@ run_example() {
         return 1
     fi
 
+    if ((!capture_ok)) || [[ ! -s ${shot} ]]; then
+        echo "FAIL ${name}: window capture failed or empty (readiness=${ready})"
+        return 1
+    fi
+
     if ((!ready)); then
-        local unresolved_surfaces unresolved_hosts detail
+        local unresolved_surfaces unresolved_hosts n_surfaces n_hosts detail
         unresolved_surfaces=$(comm -23 <(created_surface_ids) <(rendered_surface_ids) | tr '\n' ' ')
         unresolved_hosts=$(comm -23 <(created_host_ids) <(presented_host_ids) | tr '\n' ' ')
-        detail="unresolved surface_ids=[${unresolved_surfaces% }] unresolved host_ids=[${unresolved_hosts% }]"
+        n_surfaces=$(created_surface_ids | wc -l | tr -d ' ')
+        n_hosts=$(created_host_ids | wc -l | tr -d ' ')
+        detail="observed surfaces=${n_surfaces} hosts=${n_hosts}; unresolved surface_ids=[${unresolved_surfaces% }] host_ids=[${unresolved_hosts% }]"
         [[ -n ${READINESS_PATTERN} ]] \
             && detail="${detail}, sequence '${READINESS_PATTERN}' + render-complete unmet"
         echo "FAIL ${name}: readiness deadline ${SETTLE_DEADLINE}s reached (${detail})"
