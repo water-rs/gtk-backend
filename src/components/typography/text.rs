@@ -14,7 +14,9 @@ use waterui_text::styled::{Style, StyledStr};
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
-use crate::util::{resolved_color_to_hex, resolved_color_to_rgba8, store_watcher_guards};
+use crate::util::{
+    channel_to_u8, resolved_color_to_hex, resolved_color_to_rgba8, store_watcher_guards,
+};
 
 impl GtkComponent for Native<TextConfig> {
     /// Renders a `WaterUI` Text component as a GTK4 Label.
@@ -246,12 +248,7 @@ fn style_to_markup_attrs(style: &Style, env: &Environment, sensitive: bool) -> S
 fn emit_color_attrs(attrs: &mut String, name: &str, color: ResolvedColor) {
     let (red, green, blue, alpha) = resolved_color_to_rgba8(color);
     if alpha < 1.0 {
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "the alpha channel is clamped to [0.0, 1.0] before scaling"
-        )]
-        let alpha = (alpha * 255.0).round() as u8;
+        let alpha = channel_to_u8(alpha);
         let _ = write!(
             attrs,
             " {name}=\"#{red:02X}{green:02X}{blue:02X}{alpha:02X}\""

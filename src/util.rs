@@ -122,20 +122,32 @@ impl ScopedCss {
     }
 }
 
-/// Converts a resolved color to clamped sRGBA byte channels.
+/// Quantizes a normalized channel to its `u8` step.
+///
+/// Rounds to the nearest step rather than truncating: the sRGB resolution
+/// round trip can land a saturated channel a hair under 1.0 (a resolved 1.0
+/// may come back as 0.999999), where truncation would emit `0xFE` for a
+/// channel the resolver meant as `0xFF`.
 #[must_use]
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "channels are clamped to the target range before the cast"
+    reason = "the channel is clamped to [0.0, 1.0] and rounded before the cast"
 )]
+pub(crate) fn channel_to_u8(channel: f32) -> u8 {
+    (channel.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Converts a resolved color to clamped sRGBA byte channels.
+#[must_use]
 pub fn resolved_color_to_rgba8(color: ResolvedColor) -> (u8, u8, u8, f32) {
     let srgb = color.to_srgb_with_headroom();
-    let red = (srgb.red.clamp(0.0, 1.0) * 255.0) as u8;
-    let green = (srgb.green.clamp(0.0, 1.0) * 255.0) as u8;
-    let blue = (srgb.blue.clamp(0.0, 1.0) * 255.0) as u8;
-    let alpha = color.opacity.clamp(0.0, 1.0);
-    (red, green, blue, alpha)
+    (
+        channel_to_u8(srgb.red),
+        channel_to_u8(srgb.green),
+        channel_to_u8(srgb.blue),
+        color.opacity.clamp(0.0, 1.0),
+    )
 }
 
 /// Converts a resolved color to clamped SDR sRGBA float channels in `[0.0, 1.0]`.
@@ -182,4 +194,41 @@ pub fn resolved_color_to_hex(color: ResolvedColor) -> String {
 pub fn resolved_color_to_css_rgba(color: ResolvedColor) -> String {
     let (red, green, blue, alpha) = resolved_color_to_rgba8(color);
     format!("rgba({red}, {green}, {blue}, {alpha})")
+}
+
+#[cfg(test)]
+mod tests {
+    use waterui_graphics::color::Srgb;
+
+    use super::*;
+
+    /// A saturated channel can come back from the sRGB resolution round trip
+    /// a hair under 1.0; the byte conversion must round to 255 rather than
+    /// truncate to 254. Regression: markup emitted `#FEFEFE` for a white
+    /// environment foreground and Pango read `0xFEFE` (65278).
+    #[test]
+    fn rgba8_rounds_srgb_roundtrip_to_full_byte() {
+        assert_eq!(
+            resolved_color_to_rgba8(ResolvedColor::from_srgb(Srgb::new_u8(255, 255, 255))),
+            (255, 255, 255, 1.0)
+        );
+        assert_eq!(
+            resolved_color_to_rgba8(ResolvedColor::from_srgb(Srgb::new_u8(255, 0, 0))),
+            (255, 0, 0, 1.0)
+        );
+        assert_eq!(
+            resolved_color_to_rgba8(ResolvedColor::from_srgb(Srgb::new_u8(0, 128, 64))),
+            (0, 128, 64, 1.0)
+        );
+    }
+
+    #[test]
+    fn channel_to_u8_clamps_then_rounds() {
+        assert_eq!(channel_to_u8(0.0), 0);
+        assert_eq!(channel_to_u8(1.0), 255);
+        assert_eq!(channel_to_u8(0.999), 255);
+        assert_eq!(channel_to_u8(0.5), 128);
+        assert_eq!(channel_to_u8(1.5), 255);
+        assert_eq!(channel_to_u8(-0.5), 0);
+    }
 }
