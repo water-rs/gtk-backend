@@ -118,7 +118,7 @@ run_example() {
 
     # Packaging produces the same binary a user would run; measuring it keeps
     # size/RSS/startup honest instead of reporting debug-profile numbers.
-    if ! timeout "${PACKAGE_DEADLINE}" water package --platform linux --backend gtk4 --release >>"${log}" 2>&1; then
+    if ! timeout "${PACKAGE_DEADLINE}" water package --platform linux --backend gtk4 --release --yes >>"${log}" 2>&1; then
         echo "FAIL ${name}: water package failed or exceeded ${PACKAGE_DEADLINE}s (see log)"
         return 1
     fi
