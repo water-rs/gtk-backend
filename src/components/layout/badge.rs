@@ -57,7 +57,11 @@ impl GtkComponent for Native<BadgeConfig> {
         } = self.into_inner();
 
         let overlay = gtk4::Overlay::new();
-        overlay.set_child(Some(&renderer.render_any(content.build(), env)));
+        let content_widget = renderer.render_any(content.build(), env);
+        overlay.set_child(Some(&content_widget));
+        // The overlay sizes to its main child — the badge is chrome that does
+        // not participate — so every layout channel reads through to it.
+        crate::layout::proposal::transparent_to_content(overlay.upcast_ref(), &content_widget);
 
         let badge = gtk4::Label::new(None);
         badge.set_halign(gtk4::Align::End);

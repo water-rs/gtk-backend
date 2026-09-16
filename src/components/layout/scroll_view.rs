@@ -11,6 +11,7 @@ use waterui_core::{Environment, Native};
 use waterui_layout::scroll::{Axis, ScrollView};
 
 use crate::component::GtkComponent;
+use crate::layout::proposal::set_scroll_axes;
 use crate::renderer::GtkRenderer;
 use crate::util::store_watcher_guard;
 
@@ -72,6 +73,23 @@ impl GtkComponent for Native<ScrollView> {
         // Render and add the content
         let content_widget = renderer.render_any(content, env);
         scrolled_window.set_child(Some(&content_widget));
+
+        let (scrolls_h, scrolls_v) = match axis {
+            Axis::Horizontal => (true, false),
+            Axis::Vertical => (false, true),
+            Axis::All => (true, true),
+            _ => panic!("GTK backend does not support scroll axis {axis:?}"),
+        };
+
+        // GTK wraps a non-scrollable child in a `GtkViewport` at insertion,
+        // and allocates the content inside the viewport's `size_allocate`
+        // vfunc. There is no `size-allocate` signal in GTK4 to hook from the
+        // outside, and none is needed: the marker lets a hosted layout
+        // container reconstruct the owner's offer — `None` down every
+        // scrolling axis, the viewport extent across each other one — inside
+        // its own `size_allocate`, strictly before it allocates its children
+        // and live on every pass the viewport resizes it.
+        set_scroll_axes(&content_widget, scrolls_h, scrolls_v);
 
         if let Some(controller) = controller {
             let requested = Rc::new(Cell::new(None::<Point>));

@@ -36,7 +36,7 @@ use waterui_core::Binding;
 use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::handler::BoxedAction;
-use waterui_core::layout::StretchAxis;
+use waterui_core::layout::{LayoutPriority, StretchAxis};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{AnyView, Environment, Native, View};
 use waterui_core::{IgnorableMetadata, Metadata, Retain, Str};
@@ -68,6 +68,7 @@ use waterui_webview::WebView;
 use crate::component::GtkComponent;
 use crate::components::graphics::clip_shape_widget::WuiClipShape;
 use crate::components::menu::rebuild_menu_popover;
+use crate::layout::proposal::{note_reported_axis, set_layout_priority, transparent_to_content};
 use crate::util::{ScopedCss, store_watcher_guard, subscribe_then_get};
 
 pub(crate) const CSS_CLASS_DYNAMIC_RANGE_SDR: &str = "waterui-dynamic-range-sdr";
@@ -377,6 +378,9 @@ fn wrap_for_metadata(child: &Widget) -> gtk4::Box {
     wrapper.set_halign(Align::Fill);
     wrapper.set_valign(Align::Fill);
     wrapper.append(child);
+    // The box exists only to carry the metadata's GTK realization; layout-wise
+    // it *is* the content, so every layout channel reads through to it.
+    transparent_to_content(wrapper.upcast_ref(), child);
     wrapper
 }
 
@@ -793,6 +797,10 @@ impl GtkRenderer {
         let prev = self.leaf_axis.replace(None);
         let widget = self.render_any(view, env);
         let axis = self.leaf_axis.replace(prev).unwrap_or(StretchAxis::None);
+        // Record the resolved axis on the widget itself: `SubView` wrappers
+        // built over it report through the marker, and a live provider can
+        // still override it when the content's claim changes.
+        note_reported_axis(&widget, axis);
         (widget, axis)
     }
 
@@ -1411,6 +1419,18 @@ impl GtkRenderer {
 
         Self::register_passthrough_metadata::<NavigationTransitionSource>(dispatcher);
         Self::register_passthrough_metadata::<NavigationTransitionDestination>(dispatcher);
+
+        // Metadata<LayoutPriority> - override the content's layout priority
+        Self::register_transparent::<Metadata<LayoutPriority>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let widget = renderer.render_any(metadata.content, env);
+                // Rendered after the content, so this overrides the default a
+                // host like `Spacer` recorded on the same widget.
+                set_layout_priority(&widget, metadata.value.get());
+                widget
+            },
+        );
 
         // Metadata<AppliedFilter> - capture the child through the snapshot
         // pipeline, run the filtrate pipeline on wgpu, and present the

@@ -407,6 +407,10 @@ impl FilteredHost {
 pub fn render_applied_filter(mut filter: AppliedFilter, content: Widget) -> Widget {
     let host = FilteredHost::new();
     content.set_parent(&host);
+    // The host is transparent to layout — its measure and allocation pass the
+    // content through untouched — so every layout channel reads through to
+    // the content it captures.
+    crate::layout::proposal::transparent_to_content(host.upcast_ref(), &content);
     let redraw_handle = filter.redraw_handle();
 
     // `GtkWidgetPaintable` reports damage inside the child subtree
