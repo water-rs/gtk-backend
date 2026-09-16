@@ -10,7 +10,7 @@
 
 //! System `WebKitGTK` implementation selected by `webview-system`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -773,8 +773,8 @@ mod webkitgtk {
                 webkit_settings_set_user_agent(
                     webkit_web_view_get_settings(ptr.as_ptr()),
                     cstr.as_ptr(),
-                )
-            };
+                );
+            }
         }
     }
 
@@ -1498,14 +1498,6 @@ impl GtkWebViewHandle {
                 .is_some(),
             "GTK WebView missing `estimated-load-progress` property"
         );
-        assert!(
-            self.widget.find_property("can-go-back").is_some(),
-            "GTK WebView missing `can-go-back` property"
-        );
-        assert!(
-            self.widget.find_property("can-go-forward").is_some(),
-            "GTK WebView missing `can-go-forward` property"
-        );
 
         // Every closure below captures `shared` alone. Capturing the handle — which
         // owns `widget` — closed a cycle through the widget the closure is attached
@@ -1535,27 +1527,10 @@ impl GtkWebViewHandle {
                 }
             });
 
-        let shared = self.shared.clone();
-        self.widget
-            .connect_notify_local(Some("can-go-back"), move |obj, _| {
-                let back = obj.property::<bool>("can-go-back");
-                let forward = obj.property::<bool>("can-go-forward");
-                shared.emit(BackendEvent::NavigationState {
-                    can_go_back: back,
-                    can_go_forward: forward,
-                });
-            });
-
-        let shared = self.shared.clone();
-        self.widget
-            .connect_notify_local(Some("can-go-forward"), move |obj, _| {
-                let back = obj.property::<bool>("can-go-back");
-                let forward = obj.property::<bool>("can-go-forward");
-                shared.emit(BackendEvent::NavigationState {
-                    can_go_back: back,
-                    can_go_forward: forward,
-                });
-            });
+        // WebKitGTK 6.0 reports the back/forward lists through methods only —
+        // `can-go-back` and `can-go-forward` are not `GObject` properties — so
+        // `install_signal_handlers` re-emits `NavigationState` from
+        // `load-changed`, the point the lists actually change.
     }
 
     #[cfg(all(
@@ -1654,6 +1629,36 @@ impl GtkWebViewHandle {
         // a WebKitGTK signal, and the callback's type matches its prototype.
         unsafe {
             webkitgtk::connect_signal(webview_obj, &tls_signal, tls_callback, tls_data);
+        }
+
+        let load_changed_signal =
+            std::ffi::CString::new("load-changed").expect("valid signal name");
+        // SAFETY: `on_load_changed` has the `load-changed` signal's C
+        // prototype; `GCallback` erases the signature, so the transmute only
+        // renames it.
+        let load_changed_callback = Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(
+                    *mut webkitgtk::WebKitWebView,
+                    i32,
+                    *mut std::ffi::c_void,
+                ) -> gtk4::glib::ffi::gboolean,
+                unsafe extern "C" fn(),
+            >(on_load_changed)
+        });
+        let load_changed_data = LoadChangedData {
+            shared: self.shared.clone(),
+            last: Cell::new((false, false)),
+        };
+        // SAFETY: `webview_obj` is the live view's `GObject`, the signal name is
+        // a WebKitGTK signal, and the callback's type matches its prototype.
+        unsafe {
+            webkitgtk::connect_signal(
+                webview_obj,
+                &load_changed_signal,
+                load_changed_callback,
+                load_changed_data,
+            );
         }
     }
 
@@ -2352,6 +2357,22 @@ struct TlsFailedData {
     unix,
     not(target_os = "macos")
 ))]
+#[derive(Clone)]
+struct LoadChangedData {
+    shared: Rc<SharedState>,
+    /// The last emitted `(can_go_back, can_go_forward)` — `load-changed`
+    /// fires on every load event while the lists change only on commit, so
+    /// the emission is deduplicated to the change the notify observers would
+    /// have reported.
+    last: Cell<(bool, bool)>,
+}
+
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 struct ScriptMessageData {
     shared: Rc<SharedState>,
     /// Weak, because this data lives in a closure the web view's own user content
@@ -2854,4 +2875,33 @@ unsafe extern "C" fn on_load_failed_with_tls_errors(
         message: Str::from(message),
     }));
     1
+}
+
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+unsafe extern "C" fn on_load_changed(
+    web_view: *mut webkitgtk::WebKitWebView,
+    _load_event: i32,
+    user_data: *mut std::ffi::c_void,
+) -> gtk4::glib::ffi::gboolean {
+    // SAFETY: `user_data` is the `LoadChangedData` box the signal connection
+    // owns for the connection's lifetime.
+    let data = unsafe { &*(user_data.cast::<LoadChangedData>()) };
+    // SAFETY: `web_view` is the live view this signal fired on, so it is a
+    // valid `NonNull` for the getter wrappers.
+    let view = unsafe { std::ptr::NonNull::new_unchecked(web_view) };
+    let back = webkitgtk::can_go_back(view);
+    let forward = webkitgtk::can_go_forward(view);
+    if (back, forward) != data.last.get() {
+        data.last.set((back, forward));
+        data.shared.emit(BackendEvent::NavigationState {
+            can_go_back: back,
+            can_go_forward: forward,
+        });
+    }
+    0
 }
