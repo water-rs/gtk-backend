@@ -182,6 +182,18 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x1024x24" dbus-run-session -- \
             sh -c 'openbox & sleep 2; exec ./.github/scripts/run-e2e-example.sh'
 
+      # Throwaway probe: run the text-component lib tests so this run also
+      # carries real assertions for the Foreground-token semantics — Pango
+      # alpha (partial and zero) and inherited sensitivity through an
+      # ancestor — not only a screenshot. Output lands in e2e-logs/.
+      - name: Probe text foreground semantics
+        run: |
+          mkdir -p e2e-logs
+          set -o pipefail
+          xvfb-run -a -s "-screen 0 1280x1024x24" \
+            cargo test --lib components::typography::text:: \
+            2>&1 | tee e2e-logs/probe-text.log
+
       - name: Upload captures
         if: always()
         uses: actions/upload-artifact@v4
