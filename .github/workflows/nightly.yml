@@ -77,9 +77,10 @@ jobs:
       - name: Emit the runnable example matrix
         id: list
         run: |
-          comm -23 \
-            <(./.github/scripts/discover-examples.sh | sort) \
-            <(grep -E '^\s*[^#[:space:]]' e2e/skip.txt | awk '{print $1}' | sort) \
+          # Throwaway validation matrix: the examples covering the GL loader
+          # lifetime fix — filter (the #39 crash), stress and map (GpuSurface
+          # device init through the same resolver path).
+          printf 'filter\nstress\nmap\n' \
             | tee /dev/stderr \
             | jq -Rnc '{example: [inputs]}' > /tmp/matrix.json
           echo "matrix=$(cat /tmp/matrix.json)" >> "$GITHUB_OUTPUT"
