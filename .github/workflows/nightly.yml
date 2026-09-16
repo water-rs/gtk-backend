@@ -182,16 +182,19 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x1024x24" dbus-run-session -- \
             sh -c 'openbox & sleep 2; exec ./.github/scripts/run-e2e-example.sh'
 
-      # Throwaway probe: run the text-component lib tests so this run also
-      # carries real assertions for the Foreground-token semantics — Pango
-      # alpha (partial and zero) and inherited sensitivity through an
-      # ancestor — not only a screenshot. Output lands in e2e-logs/.
+      # Throwaway probe: run the text-component tests through nextest — the
+      # repository's GTK test model runs each test in its own process,
+      # unlike the shared-process libtest harness — so this run also
+      # carries real assertions for the Foreground-token semantics (Pango
+      # alpha, inherited sensitivity). Output lands in e2e-logs/.
+      - uses: taiki-e/install-action@nextest
+
       - name: Probe text foreground semantics
         run: |
           mkdir -p e2e-logs
           set -o pipefail
           xvfb-run -a -s "-screen 0 1280x1024x24" \
-            cargo test --lib components::typography::text:: \
+            cargo nextest run -E 'test(/typography::text/)' \
             2>&1 | tee e2e-logs/probe-text.log
 
       - name: Upload captures
