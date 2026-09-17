@@ -104,13 +104,18 @@ impl Palette {
             tertiary_container: binding(with_opacity(accent, 0.2)),
             selection_container: binding(accent),
             selection_foreground: binding(lookup(widget, "theme_selected_fg_color")),
-            // GTK names its destructive emphasis `error_bg_color` (the fill a
-            // badge draws) with `error_fg_color` for content on the fill, so
-            // the pair maps onto Error / ErrorForeground the way
-            // `theme_selected_bg_color` / `theme_selected_fg_color` map onto
-            // the accent pair.
-            error: binding(lookup(widget, "error_bg_color")),
-            error_foreground: binding(lookup(widget, "error_fg_color")),
+            // GTK's Default theme exports the error emphasis as
+            // `error_color` — `error_bg_color` / `error_fg_color` are
+            // libadwaita names that do not exist without an Adwaita
+            // stylesheet. The Default theme paints destructive content
+            // white on its colored fill (`.destructive-action` gets
+            // `button(normal, $destructive_color, white)`), and exports
+            // that white as `theme_selected_fg_color`, so the pair maps
+            // onto Error / ErrorForeground the way
+            // `theme_selected_bg_color` / `theme_selected_fg_color` map
+            // onto the accent pair.
+            error: binding(lookup(widget, "error_color")),
+            error_foreground: binding(lookup(widget, "theme_selected_fg_color")),
         }
     }
 
@@ -133,8 +138,9 @@ impl Palette {
         self.selection_container.set(accent);
         self.selection_foreground
             .set(lookup(widget, "theme_selected_fg_color"));
-        self.error.set(lookup(widget, "error_bg_color"));
-        self.error_foreground.set(lookup(widget, "error_fg_color"));
+        self.error.set(lookup(widget, "error_color"));
+        self.error_foreground
+            .set(lookup(widget, "theme_selected_fg_color"));
     }
 }
 
