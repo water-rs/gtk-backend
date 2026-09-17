@@ -101,6 +101,9 @@ jobs:
         with:
           shared-key: nightly-e2e
           workspaces: waterui -> ../e2e-target
+          # `water package` builds into the CLI's shared target (water-rs/cli#65),
+          # which the workspace entry above does not cover.
+          cache-directories: ~/.water/build_cache/target
 
       # The CLI lives in water-rs/cli since water-rs/waterui#899; install its
       # dev branch so the e2e exercises the same generation logic the
@@ -163,6 +166,9 @@ jobs:
           shared-key: nightly-e2e
           save-if: false
           workspaces: waterui -> ../e2e-target
+          # `water package` builds into the CLI's shared target (water-rs/cli#65),
+          # which the workspace entry above does not cover.
+          cache-directories: ~/.water/build_cache/target
 
       - uses: actions/download-artifact@v4
         with:

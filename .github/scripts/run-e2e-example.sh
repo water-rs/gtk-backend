@@ -141,12 +141,13 @@ run_example() {
         return 1
     fi
 
-    local crate bin
-    crate=$(sed -n 's/^name = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
-    bin=$(find "${CARGO_TARGET_DIR}" . -type f -name "${crate}-gtk4" \
-        -path "*/release/*" 2>/dev/null | head -1)
+    # `water package` names the artifact it produced (`Packaged at <path>`);
+    # since water-rs/cli#65 it builds into the CLI's per-user shared target,
+    # not under CARGO_TARGET_DIR, so the log line is the only honest source.
+    local bin
+    bin=$(sed -n 's/.*Packaged at //p' "${log}" | tail -1 | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r')
     if [[ -z ${bin} || ! -x ${bin} ]]; then
-        echo "FAIL ${name}: release binary ${crate}-gtk4 not found under ${CARGO_TARGET_DIR}"
+        echo "FAIL ${name}: water package reported no executable artifact (${bin:-no 'Packaged at' line}; see log)"
         return 1
     fi
 
