@@ -1184,6 +1184,46 @@ impl SurfaceInputSink for GpuSurfaceInput {
     }
 }
 
+/// Installs the layout providers that let a `GpuSurface` answer for its
+/// `GLArea`: the surface's own measure answers layout probes — it encodes the
+/// same stretch-fill semantics `leaf_measure` approximates (a stretch axis
+/// echoes the proposal) plus the intrinsic fallback a `GtkGLArea` cannot know
+/// (an aspect-ratio video's height, a loaded image's pixel grid). Answering
+/// live matters as much as answering at all — the intrinsic arrives after
+/// creation, and `sync_surface_sizing` renegotiates when it does. While the
+/// surface is checked out for setup the probe falls back to GTK's measure,
+/// the transient honest answer.
+fn install_surface_providers(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
+    install_measure_provider(area.upcast_ref(), {
+        let state = Rc::clone(state);
+        move |_, proposal, _resolved| {
+            let st = state.borrow();
+            st.gpu_surface
+                .as_ref()
+                .map(|surface| surface.measure(proposal))
+        }
+    });
+    install_axis_provider(area.upcast_ref(), {
+        let state = Rc::clone(state);
+        move |w| {
+            state.borrow().gpu_surface.as_ref().map_or_else(
+                || reported_axis(w).unwrap_or(StretchAxis::Both),
+                waterui_graphics::GpuSurface::stretch_axis,
+            )
+        }
+    });
+    install_priority_provider(area.upcast_ref(), {
+        let state = Rc::clone(state);
+        move |_| {
+            state
+                .borrow()
+                .gpu_surface
+                .as_ref()
+                .map_or(0, waterui_graphics::GpuSurface::priority)
+        }
+    });
+}
+
 pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget {
     let area = gtk4::GLArea::new();
     tracing::debug!(
@@ -1199,43 +1239,7 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
 
     let wants_input_events = gpu_surface.wants_input_events();
     let state = Rc::new(RefCell::new(GpuState::new(gpu_surface, env)));
-
-    // The surface's own measure answers layout probes: it encodes the same
-    // stretch-fill semantics `leaf_measure` approximates (a stretch axis
-    // echoes the proposal) plus the intrinsic fallback a `GtkGLArea` cannot
-    // know (an aspect-ratio video's height, a loaded image's pixel grid).
-    // Answering live matters as much as answering at all — the intrinsic
-    // arrives after creation, and `sync_surface_sizing` renegotiates when it
-    // does. While the surface is checked out for setup the probe falls back
-    // to GTK's measure, the transient honest answer.
-    install_measure_provider(area.upcast_ref(), {
-        let state = Rc::clone(&state);
-        move |_, proposal, _resolved| {
-            let st = state.borrow();
-            st.gpu_surface
-                .as_ref()
-                .map(|surface| surface.measure(proposal))
-        }
-    });
-    install_axis_provider(area.upcast_ref(), {
-        let state = Rc::clone(&state);
-        move |w| {
-            state.borrow().gpu_surface.as_ref().map_or_else(
-                || reported_axis(w).unwrap_or(StretchAxis::Both),
-                |surface| surface.stretch_axis(),
-            )
-        }
-    });
-    install_priority_provider(area.upcast_ref(), {
-        let state = Rc::clone(&state);
-        move |_| {
-            state
-                .borrow()
-                .gpu_surface
-                .as_ref()
-                .map_or(0, |surface| surface.priority())
-        }
-    });
+    install_surface_providers(&area, &state);
 
     install_input_controllers(&area, &state);
     // A view that draws its own interactive content — a browser page, a

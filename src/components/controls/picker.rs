@@ -210,8 +210,6 @@ fn render_radio_group(env: &Environment, config: PickerConfig) -> Widget {
     // group semantics clear the previous button, and the toggled handler
     // above is a no-op for the already-current selection.
     let selection_guard = selection.computed().watch({
-        let buttons = buttons.clone();
-        let ids = ids.clone();
         move |ctx| {
             let value = ctx.into_value();
             let buttons = buttons.clone();
