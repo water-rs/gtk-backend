@@ -160,9 +160,11 @@ run_example() {
     # Backend diagnostics are emitted through `tracing`; without RUST_LOG the
     # subscriber only shows errors, so per-example GPU lifecycle detail needs
     # an explicit opt-in here. Output lands in the example's launcher log.
-    RUST_LOG="${RUST_LOG:-info,waterui_gtk=debug,waterui_graphics=debug,waterui_media=debug,waterui_map_gpu=debug,waterui::gtk::layout=debug}" \
+    # WATERUI_GTK_LAYOUT_DEBUG stays off: it emits several lines per measured
+    # widget per negotiation — tens of GB per example in run 35286011114 —
+    # and the write pressure alone starves the app's main loop.
+    RUST_LOG="${RUST_LOG:-info,waterui_gtk=debug,waterui_graphics=debug,waterui_media=debug,waterui_map_gpu=debug}" \
         RUST_BACKTRACE=1 \
-        WATERUI_GTK_LAYOUT_DEBUG=1 \
         setsid "${bin}" >>"${log}" 2>&1 &
     launcher=$!
 
