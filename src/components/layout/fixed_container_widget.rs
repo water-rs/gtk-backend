@@ -29,7 +29,9 @@ use crate::layout::proposal::{
     install_axis_provider, install_proposal_sink, proposals_equal, query_axis, reported_axis,
     scroll_axes_for, scroll_offer,
 };
-use crate::layout::{FixedSizeSubView, GtkSubView, apply_placements};
+use crate::layout::{
+    FixedSizeSubView, GtkSubView, LayoutMeasureMemo, apply_placements, layout_measure_key,
+};
 use crate::util::store_watcher_guards;
 
 fn layout_debug_enabled() -> bool {
@@ -109,6 +111,97 @@ mod imp {
             reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
         )]
         fn measure(&self, orientation: gtk4::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            let mut memo = MeasureMemo::default();
+            let answer = self.measure_inner(orientation, for_size, &mut memo);
+            match orientation {
+                gtk4::Orientation::Horizontal => (answer.min_width, answer.natural_width, -1, -1),
+                gtk4::Orientation::Vertical => (answer.min_height, answer.natural_height, -1, -1),
+                _ => panic!("WuiFixedContainer: unexpected orientation {orientation:?}"),
+            }
+        }
+
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+        )]
+        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            self.parent_size_allocate(width, height, baseline);
+            self.obj().place_children(width, height, "allocate");
+        }
+    }
+
+    /// One GTK measure request within a negotiation: the widget being
+    /// probed, the orientation, and the cross-axis `for_size` constraint.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    struct MeasureKey {
+        widget: usize,
+        orientation: gtk4::Orientation,
+        for_size: i32,
+    }
+
+    /// One probe's answer: the minimum and natural extents in both
+    /// orientations that `measure_inner` computes.
+    #[derive(Clone, Copy)]
+    struct MeasureAnswer {
+        min_width: i32,
+        min_height: i32,
+        natural_width: i32,
+        natural_height: i32,
+    }
+
+    /// One pass's measure answers for the GTK minimum floor, plus the
+    /// shared container-layout memo the `GtkSubView` wrappers carry down
+    /// the natural pass so each nested container is probed once per
+    /// distinct proposal.
+    #[derive(Default)]
+    struct MeasureMemo {
+        gtk: std::collections::HashMap<MeasureKey, MeasureAnswer>,
+        layout: LayoutMeasureMemo,
+    }
+
+    impl WuiFixedContainer {
+        /// The measure computation behind `measure`, memoized per
+        /// `(widget, orientation, for_size)` within a single negotiation.
+        ///
+        /// The minimum floor asks every child for *both* orientations, so
+        /// asking a nested container through GTK's `Widget::measure` makes
+        /// each level re-run the whole subtree's min computation — O(2^depth)
+        /// leaf measures per negotiation, which stalls the main loop for
+        /// tens of seconds on a picker-deep tree and keeps the window from
+        /// ever reaching its first paint. Container children are therefore
+        /// answered through this memoized path instead of GTK dispatch; a
+        /// node is queried under at most three `(orientation, for_size)`
+        /// variants per pass, so a negotiation stays linear in the tree.
+        fn measure_inner(
+            &self,
+            orientation: gtk4::Orientation,
+            for_size: i32,
+            memo: &mut MeasureMemo,
+        ) -> MeasureAnswer {
+            let key = MeasureKey {
+                widget: self.obj().upcast_ref::<Widget>().as_ptr() as usize,
+                orientation,
+                for_size,
+            };
+            if let Some(&hit) = memo.gtk.get(&key) {
+                return hit;
+            }
+            let result = self.measure_uncached(orientation, for_size, memo);
+            memo.gtk.insert(key, result);
+            result
+        }
+
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_precision_loss,
+            reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+        )]
+        fn measure_uncached(
+            &self,
+            orientation: gtk4::Orientation,
+            for_size: i32,
+            memo: &mut MeasureMemo,
+        ) -> MeasureAnswer {
             let layout_borrow = self.layout.borrow();
             let Some(layout) = layout_borrow.as_ref() else {
                 panic!("WuiFixedContainer: missing layout (internal error)");
@@ -121,7 +214,7 @@ mod imp {
             // and `measure_layout` handles an empty child set correctly.
             let subviews: Vec<GtkSubView> = children
                 .iter()
-                .map(|(w, axis)| GtkSubView::new(w.clone(), *axis))
+                .map(|(w, axis)| GtkSubView::with_memo(w.clone(), *axis, Some(memo.layout.clone())))
                 .collect();
 
             let refs: Vec<&dyn SubView> = subviews.iter().map(|v| v as &dyn SubView).collect();
@@ -156,17 +249,14 @@ mod imp {
                 .iter()
                 .map(|(widget, axis)| {
                     let (min_w, min_h) = match orientation {
-                        gtk4::Orientation::Horizontal => {
-                            let (min_w, ..) =
-                                widget.measure(gtk4::Orientation::Horizontal, for_size);
-                            let (min_h, ..) = widget.measure(gtk4::Orientation::Vertical, -1);
-                            (min_w, min_h)
-                        }
-                        gtk4::Orientation::Vertical => {
-                            let (min_w, ..) = widget.measure(gtk4::Orientation::Horizontal, -1);
-                            let (min_h, ..) = widget.measure(gtk4::Orientation::Vertical, for_size);
-                            (min_w, min_h)
-                        }
+                        gtk4::Orientation::Horizontal => (
+                            child_min(widget, gtk4::Orientation::Horizontal, for_size, memo),
+                            child_min(widget, gtk4::Orientation::Vertical, -1, memo),
+                        ),
+                        gtk4::Orientation::Vertical => (
+                            child_min(widget, gtk4::Orientation::Horizontal, -1, memo),
+                            child_min(widget, gtk4::Orientation::Vertical, for_size, memo),
+                        ),
                         _ => panic!("WuiFixedContainer: unexpected orientation {orientation:?}"),
                     };
                     FixedSizeSubView::new(
@@ -197,21 +287,39 @@ mod imp {
                     "Measured GTK fixed container"
                 );
             }
-            match orientation {
-                gtk4::Orientation::Horizontal => (min_w, w, -1, -1),
-                gtk4::Orientation::Vertical => (min_h, h, -1, -1),
-                _ => panic!("WuiFixedContainer: unexpected orientation {orientation:?}"),
+            MeasureAnswer {
+                min_width: min_w,
+                min_height: min_h,
+                natural_width: w,
+                natural_height: h,
             }
         }
+    }
 
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
-        )]
-        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
-            self.parent_size_allocate(width, height, baseline);
-            self.obj().place_children(width, height, "allocate");
-        }
+    /// The GTK minimum `widget` reports for `orientation` under `for_size`.
+    /// A `WuiFixedContainer` child answers through the memoized inner pass so
+    /// its subtree is measured once per pass instead of once per calling
+    /// orientation; native leaves go through `Widget::measure`, the honest
+    /// channel for GTK widgets.
+    fn child_min(
+        widget: &Widget,
+        orientation: gtk4::Orientation,
+        for_size: i32,
+        memo: &mut MeasureMemo,
+    ) -> i32 {
+        widget
+            .downcast_ref::<super::WuiFixedContainer>()
+            .map_or_else(
+                || widget.measure(orientation, for_size).0,
+                |container| {
+                    let answer = container.imp().measure_inner(orientation, for_size, memo);
+                    match orientation {
+                        gtk4::Orientation::Horizontal => answer.min_width,
+                        gtk4::Orientation::Vertical => answer.min_height,
+                        _ => panic!("WuiFixedContainer: unexpected orientation {orientation:?}"),
+                    }
+                },
+            )
     }
 }
 
@@ -222,7 +330,28 @@ glib::wrapper! {
 }
 
 impl WuiFixedContainer {
-    pub(crate) fn layout_measure(&self, proposal: ProposalSize) -> ViewDimensions {
+    /// Measures this container's layout under `proposal`, sharing `memo`
+    /// across the negotiation.
+    ///
+    /// `measure_layout` memoizes children only for the duration of its own
+    /// call, so without a shared map every proposal a parent probes re-runs
+    /// this container's whole subtree — and stack distribution probes at the
+    /// unspecified, minimum, ideal, and allocated mains plus place and guide
+    /// resolution, which multiplies with each nesting level. One map shared
+    /// by every `GtkSubView` in the pass collapses the negotiation to one
+    /// measure per `(container, proposal)` pair.
+    pub(crate) fn layout_measure_shared(
+        &self,
+        proposal: ProposalSize,
+        memo: Option<&LayoutMeasureMemo>,
+    ) -> ViewDimensions {
+        let key = memo.map(|_| layout_measure_key(self.upcast_ref(), proposal));
+        if let (Some(memo), Some(key)) = (memo, key)
+            && let Some(dimensions) = memo.borrow().get(&key)
+        {
+            return dimensions.clone();
+        }
+
         let imp = self.imp();
         let layout_borrow = imp.layout.borrow();
         let Some(layout) = layout_borrow.as_ref() else {
@@ -235,11 +364,15 @@ impl WuiFixedContainer {
         // minimum length.
         let subviews: Vec<GtkSubView> = children
             .iter()
-            .map(|(w, axis)| GtkSubView::new(w.clone(), *axis))
+            .map(|(w, axis)| GtkSubView::with_memo(w.clone(), *axis, memo.cloned()))
             .collect();
         let refs: Vec<&dyn SubView> = subviews.iter().map(|v| v as &dyn SubView).collect();
 
-        measure_layout(layout.as_ref(), proposal, &refs)
+        let dimensions = measure_layout(layout.as_ref(), proposal, &refs);
+        if let (Some(memo), Some(key)) = (memo, key) {
+            memo.borrow_mut().insert(key, dimensions.clone());
+        }
+        dimensions
     }
 
     /// Runs the layout engine at `width`×`height` and allocates each child at
@@ -262,7 +395,9 @@ impl WuiFixedContainer {
 
         let subviews: Vec<GtkSubView> = children
             .iter()
-            .map(|(w, axis)| GtkSubView::new(w.clone(), *axis))
+            .map(|(w, axis)| {
+                GtkSubView::with_memo(w.clone(), *axis, Some(LayoutMeasureMemo::default()))
+            })
             .collect();
         let refs: Vec<&dyn SubView> = subviews.iter().map(|v| v as &dyn SubView).collect();
 
@@ -665,7 +800,7 @@ mod tests {
             ProposalSize::UNSPECIFIED,
             ProposalSize::INFINITY,
         ] {
-            let _ = inner.layout_measure(probe);
+            let _ = inner.layout_measure_shared(probe, None);
             assert_eq!(
                 inner.imp().selected_proposal.get(),
                 Some(chosen),
@@ -712,8 +847,8 @@ mod tests {
         assert_eq!(inner_placed.borrow().last().copied(), Some(first));
 
         // Unrelated probes between placements must not disturb the packet.
-        let _ = inner.layout_measure(ProposalSize::ZERO);
-        let _ = inner.layout_measure(ProposalSize::INFINITY);
+        let _ = inner.layout_measure_shared(ProposalSize::ZERO, None);
+        let _ = inner.layout_measure_shared(ProposalSize::INFINITY, None);
         assert_eq!(inner.imp().selected_proposal.get(), Some(first));
 
         parent_selected.set(second);

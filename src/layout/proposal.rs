@@ -34,7 +34,7 @@ use gtk4::prelude::*;
 use gtk4::{Orientation, Widget};
 use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
 
-use crate::layout::subview::measure_view;
+use crate::layout::subview::{LayoutMeasureMemo, measure_view};
 
 const WIDGET_LAYOUT_KEY: &str = "waterui-widget-layout";
 
@@ -44,7 +44,14 @@ type AxisProvider = Rc<dyn Fn(&Widget) -> StretchAxis>;
 type PriorityProvider = Rc<dyn Fn(&Widget) -> i32>;
 /// The raw measurement channel a layout-transparent host installs on a
 /// widget — see `measure_provider` on [`WidgetLayout`] for the contract.
-type MeasureProvider = Rc<dyn Fn(&Widget, ProposalSize, StretchAxis) -> Option<ViewDimensions>>;
+type MeasureProvider = Rc<
+    dyn Fn(
+        &Widget,
+        ProposalSize,
+        StretchAxis,
+        Option<&LayoutMeasureMemo>,
+    ) -> Option<ViewDimensions>,
+>;
 /// What a delivered selected proposal does on a widget.
 type ProposalSink = Rc<dyn Fn(&Widget, ProposalSize)>;
 
@@ -264,7 +271,13 @@ pub fn install_proposal_sink(widget: &Widget, sink: impl Fn(&Widget, ProposalSiz
 /// on [`WidgetLayout`] for the contract.
 pub fn install_measure_provider(
     widget: &Widget,
-    provider: impl Fn(&Widget, ProposalSize, StretchAxis) -> Option<ViewDimensions> + 'static,
+    provider: impl Fn(
+        &Widget,
+        ProposalSize,
+        StretchAxis,
+        Option<&LayoutMeasureMemo>,
+    ) -> Option<ViewDimensions>
+    + 'static,
 ) {
     *ensure_widget_layout(widget).measure_provider.borrow_mut() = Some(Rc::new(provider));
 }
@@ -305,8 +318,8 @@ pub fn transparent_to_content(widget: &Widget, content: &Widget) {
     forward_proposals_to_child(widget, content);
 
     let content_for_measure = content.clone();
-    install_measure_provider(widget, move |_, proposal, resolved| {
-        Some(measure_view(&content_for_measure, proposal, resolved))
+    install_measure_provider(widget, move |_, proposal, resolved, memo| {
+        Some(measure_view(&content_for_measure, proposal, resolved, memo))
     });
 
     let content_for_axis = content.clone();

@@ -1,5 +1,9 @@
 //! `SubView` implementation using GTK widget measurement.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use gtk4::Widget;
 use gtk4::prelude::*;
 use waterui_core::MainThreadBound;
@@ -14,6 +18,35 @@ fn layout_debug_enabled() -> bool {
     std::env::var_os("WATERUI_GTK_LAYOUT_DEBUG").is_some()
 }
 
+/// A `(widget, proposal)` → `ViewDimensions` answer shared by every
+/// `GtkSubView` minted inside one layout pass.
+///
+/// `measure_layout` wraps children in `MemoizedSubView`, but that cache lives
+/// only for the one call: a nested `WuiFixedContainer` child mints fresh
+/// wrappers — and a fresh cache — for every probe its parent issues, so each
+/// of the parent's proposals re-runs the whole subtree. Stack distribution
+/// probes a child at the unspecified, minimum, ideal, and allocated mains —
+/// plus place and guide resolution — and each level multiplies the next, so
+/// an unshared negotiation is exponential in container depth and a deeply
+/// nested tree (`edge_layout`'s recursive `deep_nest`) never finishes its
+/// first measure. Keying the answer on `(widget, proposal bits)` inside a
+/// shared map collapses the pass to one measure per distinct probe.
+pub type LayoutMeasureMemo = Rc<RefCell<HashMap<LayoutMeasureKey, ViewDimensions>>>;
+
+/// The key a [`LayoutMeasureMemo`] indexes on: the measured widget's identity
+/// plus the proposal's raw bits, so `-0.0` and NaN proposals key consistently
+/// instead of by float equality.
+pub type LayoutMeasureKey = (usize, Option<u32>, Option<u32>);
+
+/// Builds the memo key for `widget` under `proposal`.
+pub(crate) fn layout_measure_key(widget: &Widget, proposal: ProposalSize) -> LayoutMeasureKey {
+    (
+        widget.as_ptr() as usize,
+        proposal.width.map(f32::to_bits),
+        proposal.height.map(f32::to_bits),
+    )
+}
+
 /// A wrapper around a GTK widget that implements the `SubView` trait.
 ///
 /// This allows `waterui-layout` algorithms to measure GTK widgets
@@ -25,6 +58,7 @@ fn layout_debug_enabled() -> bool {
 pub struct GtkSubView {
     widget: MainThreadBound<Widget>,
     stretch_axis: StretchAxis,
+    memo: Option<LayoutMeasureMemo>,
 }
 
 /// A `SubView` that always reports a fixed size regardless of proposal.
@@ -65,9 +99,22 @@ impl GtkSubView {
     /// Creates a new `GtkSubView` wrapping the given widget.
     #[must_use]
     pub fn new(widget: Widget, stretch_axis: StretchAxis) -> Self {
+        Self::with_memo(widget, stretch_axis, None)
+    }
+
+    /// Wraps `widget` with a shared measure memo: a container descendant is
+    /// probed once per distinct proposal across the whole pass instead of
+    /// once per calling ancestor.
+    #[must_use]
+    pub fn with_memo(
+        widget: Widget,
+        stretch_axis: StretchAxis,
+        memo: Option<LayoutMeasureMemo>,
+    ) -> Self {
         Self {
             widget: MainThreadBound::new(widget),
             stretch_axis,
+            memo,
         }
     }
 
@@ -121,6 +168,7 @@ pub(crate) fn measure_view(
     widget: &Widget,
     proposal: ProposalSize,
     fallback_axis: StretchAxis,
+    memo: Option<&LayoutMeasureMemo>,
 ) -> ViewDimensions {
     let margin_start = widget.margin_start() as f32;
     let margin_top = widget.margin_top() as f32;
@@ -129,11 +177,11 @@ pub(crate) fn measure_view(
     let inner_proposal = shrink_proposal(proposal, margin_h, margin_v);
     let resolved_axis = query_axis(widget).unwrap_or(fallback_axis);
     let inner_dimensions = if let Some(dimensions) = measure_provider(widget)
-        .and_then(|provider| provider(widget, inner_proposal, resolved_axis))
+        .and_then(|provider| provider(widget, inner_proposal, resolved_axis, memo))
     {
         dimensions
     } else if let Some(container) = widget.downcast_ref::<WuiFixedContainer>() {
-        container.layout_measure(inner_proposal)
+        container.layout_measure_shared(inner_proposal, memo)
     } else {
         // GTK's public measurement API already consumes and returns margin-box
         // geometry, including baseline offsets. Only our raw providers need
@@ -266,7 +314,12 @@ fn leaf_measure(
 
 impl SubView for GtkSubView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        measure_view(&self.widget, proposal, self.stretch_axis)
+        measure_view(
+            &self.widget,
+            proposal,
+            self.stretch_axis,
+            self.memo.as_ref(),
+        )
     }
 
     /// The widget's live stretch axis: a provider installed by a dynamic or

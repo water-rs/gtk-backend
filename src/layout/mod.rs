@@ -10,4 +10,5 @@ pub(crate) mod proposal;
 pub mod subview;
 
 pub use placer::apply_placements;
-pub use subview::{FixedSizeSubView, GtkSubView};
+pub(crate) use subview::layout_measure_key;
+pub use subview::{FixedSizeSubView, GtkSubView, LayoutMeasureMemo};
