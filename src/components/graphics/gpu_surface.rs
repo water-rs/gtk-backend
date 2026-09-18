@@ -1252,8 +1252,21 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
         install_surface_input(&area, Rc::new(GpuSurfaceInput::new(&area, &state)));
     }
 
+    install_gl_lifecycle(&area, &state);
+    install_render_loop(&area, &state);
+
+    area.upcast()
+}
+
+/// Wires the `GLArea`'s context lifecycle signals to the shared
+/// [`GpuState`]: realize installs the redraw waker on the live GL
+/// context, the frame clock's tick callback reports the zero/nonzero
+/// allocation crossing that the e2e readiness gate counts as a surface
+/// owing a completed frame, and unrealize tears every context-bound
+/// object down before the context dies.
+fn install_gl_lifecycle(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
     area.connect_realize({
-        let state = Rc::clone(&state);
+        let state = Rc::clone(state);
         move |area| {
             tracing::debug!("[gtk-gpu] GLArea realize");
             area.make_current();
@@ -1300,7 +1313,7 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
     });
 
     area.connect_unrealize({
-        let state = Rc::clone(&state);
+        let state = Rc::clone(state);
         move |area| {
             // Drop wgpu objects while the GtkGLArea context is still current.
             area.make_current();
@@ -1332,9 +1345,14 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
             st.last_size = None;
         }
     });
+}
 
+/// Connects the `GLArea`'s render signal: every frame the surface is
+/// asked to draw runs the init → setup → draw chain, and a renderer
+/// that wants another frame requeues the area for the next tick.
+fn install_render_loop(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
     area.connect_render({
-        let state = Rc::clone(&state);
+        let state = Rc::clone(state);
         move |area, gl_ctx| {
             tracing::debug!("[gtk-gpu] GLArea render callback");
             area.make_current();
@@ -1360,8 +1378,6 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
             gtk4::glib::Propagation::Stop
         }
     });
-
-    area.upcast()
 }
 
 impl GtkComponent for Native<GpuSurface> {

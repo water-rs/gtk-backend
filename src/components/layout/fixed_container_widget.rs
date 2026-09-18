@@ -112,10 +112,10 @@ mod imp {
         )]
         fn measure(&self, orientation: gtk4::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
             let mut memo = MeasureMemo::default();
-            let (min_w, min_h, w, h) = self.measure_inner(orientation, for_size, &mut memo);
+            let answer = self.measure_inner(orientation, for_size, &mut memo);
             match orientation {
-                gtk4::Orientation::Horizontal => (min_w, w, -1, -1),
-                gtk4::Orientation::Vertical => (min_h, h, -1, -1),
+                gtk4::Orientation::Horizontal => (answer.min_width, answer.natural_width, -1, -1),
+                gtk4::Orientation::Vertical => (answer.min_height, answer.natural_height, -1, -1),
                 _ => panic!("WuiFixedContainer: unexpected orientation {orientation:?}"),
             }
         }
@@ -130,23 +130,33 @@ mod imp {
         }
     }
 
-    /// One pass's measure answers: `(widget, orientation, for_size)` →
-    /// `(min_width, min_height, natural_width, natural_height)` for the GTK
-    /// minimum floor, plus the shared container-layout memo the `GtkSubView`
-    /// wrappers carry down the natural pass so each nested container is
-    /// probed once per distinct proposal.
-    #[derive(Default)]
-    struct MeasureMemo {
-        gtk: std::collections::HashMap<(usize, i32, i32), (i32, i32, i32, i32)>,
-        layout: LayoutMeasureMemo,
+    /// One GTK measure request within a negotiation: the widget being
+    /// probed, the orientation, and the cross-axis `for_size` constraint.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    struct MeasureKey {
+        widget: usize,
+        orientation: gtk4::Orientation,
+        for_size: i32,
     }
 
-    const fn orientation_key(orientation: gtk4::Orientation) -> i32 {
-        match orientation {
-            gtk4::Orientation::Horizontal => 0,
-            gtk4::Orientation::Vertical => 1,
-            _ => 2,
-        }
+    /// One probe's answer: the minimum and natural extents in both
+    /// orientations that `measure_inner` computes.
+    #[derive(Clone, Copy)]
+    struct MeasureAnswer {
+        min_width: i32,
+        min_height: i32,
+        natural_width: i32,
+        natural_height: i32,
+    }
+
+    /// One pass's measure answers for the GTK minimum floor, plus the
+    /// shared container-layout memo the `GtkSubView` wrappers carry down
+    /// the natural pass so each nested container is probed once per
+    /// distinct proposal.
+    #[derive(Default)]
+    struct MeasureMemo {
+        gtk: std::collections::HashMap<MeasureKey, MeasureAnswer>,
+        layout: LayoutMeasureMemo,
     }
 
     impl WuiFixedContainer {
@@ -167,12 +177,12 @@ mod imp {
             orientation: gtk4::Orientation,
             for_size: i32,
             memo: &mut MeasureMemo,
-        ) -> (i32, i32, i32, i32) {
-            let key = (
-                self.obj().upcast_ref::<Widget>().as_ptr() as usize,
-                orientation_key(orientation),
+        ) -> MeasureAnswer {
+            let key = MeasureKey {
+                widget: self.obj().upcast_ref::<Widget>().as_ptr() as usize,
+                orientation,
                 for_size,
-            );
+            };
             if let Some(&hit) = memo.gtk.get(&key) {
                 return hit;
             }
@@ -191,7 +201,7 @@ mod imp {
             orientation: gtk4::Orientation,
             for_size: i32,
             memo: &mut MeasureMemo,
-        ) -> (i32, i32, i32, i32) {
+        ) -> MeasureAnswer {
             let layout_borrow = self.layout.borrow();
             let Some(layout) = layout_borrow.as_ref() else {
                 panic!("WuiFixedContainer: missing layout (internal error)");
@@ -277,7 +287,12 @@ mod imp {
                     "Measured GTK fixed container"
                 );
             }
-            (min_w, min_h, w, h)
+            MeasureAnswer {
+                min_width: min_w,
+                min_height: min_h,
+                natural_width: w,
+                natural_height: h,
+            }
         }
     }
 
@@ -297,11 +312,10 @@ mod imp {
             .map_or_else(
                 || widget.measure(orientation, for_size).0,
                 |container| {
-                    let (min_w, min_h, ..) =
-                        container.imp().measure_inner(orientation, for_size, memo);
+                    let answer = container.imp().measure_inner(orientation, for_size, memo);
                     match orientation {
-                        gtk4::Orientation::Horizontal => min_w,
-                        gtk4::Orientation::Vertical => min_h,
+                        gtk4::Orientation::Horizontal => answer.min_width,
+                        gtk4::Orientation::Vertical => answer.min_height,
                         _ => panic!("WuiFixedContainer: unexpected orientation {orientation:?}"),
                     }
                 },
