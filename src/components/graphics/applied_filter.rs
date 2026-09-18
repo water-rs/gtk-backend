@@ -3,7 +3,7 @@
 //! GTK never exposes a rendered widget's GPU texture handle through public
 //! API, so the child is captured through the snapshot pipeline
 //! (`snapshot_child` → `GskRenderNode` → `gsk_renderer_render_texture` →
-//! `gdk_texture_download`), which is one GPU→CPU readback per content change.
+//! `GdkTextureDownloader`), which is one GPU→CPU readback per content change.
 //! The filtered output never touches CPU memory again: it is rendered into a
 //! GL texture owned by a `GdkGLContext` created with
 //! `gdk_surface_create_gl_context` — a context in GTK's render-context share
@@ -474,6 +474,14 @@ pub fn render_applied_filter(mut filter: AppliedFilter, content: Widget) -> Widg
     host.upcast()
 }
 
+/// Downloads `texture` as R8G8B8A8 premultiplied rows, returning the pixel
+/// bytes and their row stride.
+fn download_rgba_premultiplied(texture: &gdk4::Texture) -> (glib::Bytes, usize) {
+    let mut downloader = gdk4::TextureDownloader::new(texture);
+    downloader.set_format(gdk4::MemoryFormat::R8g8b8a8Premultiplied);
+    downloader.download_bytes()
+}
+
 impl imp::FilteredHost {
     /// The `snapshot` vfunc body: ensure the GL/wgpu stack exists, recapture
     /// the child when its contents changed, run the filter, and emit the
@@ -790,14 +798,12 @@ impl imp::FilteredHost {
         // with no public GL handle, so the capture crosses to CPU memory
         // here. This is the one GPU→CPU transfer the whole pipeline pays,
         // and only when the child's contents actually changed.
-        assert!(
-            captured.format() == gdk4::MemoryFormat::R8g8b8a8Premultiplied,
-            "AppliedFilter: gsk_renderer_render_texture produced {:?}, expected R8G8B8A8 premultiplied",
-            captured.format(),
-        );
-        let stride = gpu.size.width.saturating_mul(4);
-        let mut pixels = vec![0_u8; stride as usize * gpu.size.height as usize];
-        captured.download(&mut pixels, stride as usize);
+        // `gdk_texture_download` converts to `GDK_MEMORY_DEFAULT` — B8G8R8A8
+        // premultiplied on little-endian hosts — whatever the texture's own
+        // format is, which reached the `Rgba8Unorm` input with red and blue
+        // swapped. A downloader pinned to RGBA yields the byte order the
+        // input texture declares.
+        let (pixels, stride) = download_rgba_premultiplied(&captured);
 
         // `snapshot_child` lets a nested filter host bind its own GL context,
         // and `render_texture`/`download` leave the surface's render context
@@ -826,7 +832,9 @@ impl imp::FilteredHost {
             &pixels,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(stride),
+                bytes_per_row: Some(
+                    u32::try_from(stride).expect("AppliedFilter: capture stride exceeds u32"),
+                ),
                 rows_per_image: Some(gpu.size.height),
             },
             wgpu::Extent3d {
@@ -1059,12 +1067,12 @@ mod tests {
         }
     }
 
-    #[allow(clippy::cast_sign_loss, reason = "texture dimensions are non-negative")]
-    fn download_rgba(texture: &gdk4::Texture) -> Vec<u8> {
-        let stride = texture.width() as usize * 4;
-        let mut pixels = vec![0_u8; stride * texture.height() as usize];
-        texture.download(&mut pixels, stride);
-        pixels
+    /// The RGBA bytes of the pixel at the centre of a 64×64 texture.
+    fn centre_pixel(texture: &gdk4::Texture) -> [u8; 4] {
+        let (pixels, stride) = download_rgba_premultiplied(texture);
+        pixels[32 * stride + 32 * 4..][..4]
+            .try_into()
+            .expect("four bytes per pixel")
     }
 
     #[allow(
@@ -1082,14 +1090,16 @@ mod tests {
         )
     }
 
-    /// End-to-end: a solid-white `Picture` filtered by `Invert` must present
-    /// an opaque black frame, and swapping the child's contents must produce
-    /// a fresh capture (opaque white).
+    /// End-to-end: a solid-red `Picture` filtered by `Invert` must present an
+    /// opaque cyan frame, and swapping the child's contents for blue must
+    /// produce a fresh capture (opaque yellow). Red and blue are chosen so a
+    /// channel swap anywhere between the GSK capture and the presented
+    /// texture fails the assertion; a grey fixture cannot see one.
     #[test]
     fn applied_filter_inverts_and_recaptures_child_pixels() {
         gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
 
-        let picture = gtk4::Picture::for_paintable(&solid_texture([255, 255, 255, 255], 64));
+        let picture = gtk4::Picture::for_paintable(&solid_texture([255, 0, 0, 255], 64));
         picture.set_content_fit(gtk4::ContentFit::Fill);
         let host = render_applied_filter(
             AppliedFilter::new(filtrate::FilterAdapter::new(filtrate::filters::Invert)),
@@ -1113,16 +1123,15 @@ mod tests {
             .clone()
             .expect("a presented texture exists after the first frame");
         assert_eq!((presented.width(), presented.height()), (64, 64));
-        let pixels = download_rgba(&presented);
         assert_eq!(
-            &pixels[32 * 64 * 4 + 32 * 4..][..4],
-            &[0, 0, 0, 255],
-            "inverting opaque white must produce opaque black"
+            centre_pixel(&presented),
+            [0, 255, 255, 255],
+            "inverting opaque red must produce opaque cyan"
         );
 
         // Changing the child's pixels must trigger a recapture via
         // `WidgetPaintable::invalidate-contents`.
-        picture.set_paintable(Some(&solid_texture([0, 0, 0, 255], 64)));
+        picture.set_paintable(Some(&solid_texture([0, 0, 255, 255], 64)));
         wait_for_frame(&host, Some(&presented));
         let presented = host
             .imp()
@@ -1131,11 +1140,10 @@ mod tests {
             .presented
             .clone()
             .expect("a presented texture exists after recapture");
-        let pixels = download_rgba(&presented);
         assert_eq!(
-            &pixels[32 * 64 * 4 + 32 * 4..][..4],
-            &[255, 255, 255, 255],
-            "inverting opaque black must produce opaque white"
+            centre_pixel(&presented),
+            [255, 255, 0, 255],
+            "inverting opaque blue must produce opaque yellow"
         );
 
         window.close();
