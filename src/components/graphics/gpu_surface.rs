@@ -31,7 +31,7 @@ use gdk4::prelude::*;
 use glow::HasContext;
 use gtk4::Widget;
 use gtk4::prelude::*;
-use waterui_core::layout::ProposalSize;
+use waterui_core::layout::{ProposalSize, StretchAxis};
 use waterui_core::{Environment, Native};
 use waterui_graphics::gpu_surface::WgslModuleCache;
 use waterui_graphics::gpu_surface::{
@@ -44,6 +44,9 @@ use waterui_graphics::{SceneEngine, SharedSceneRenderer};
 use super::gl_util::{GlProcResolver, make_gl_resolver};
 use crate::browser_input::{SurfaceInputSink, install as install_surface_input};
 use crate::component::GtkComponent;
+use crate::layout::proposal::{
+    install_axis_provider, install_measure_provider, install_priority_provider, reported_axis,
+};
 use crate::renderer::{CSS_CLASS_DYNAMIC_RANGE_HDR, CSS_CLASS_DYNAMIC_RANGE_SDR, GtkRenderer};
 
 #[cfg(not(target_os = "linux"))]
@@ -124,6 +127,15 @@ struct GpuState {
     /// the e2e readiness gate sequences per-surface completion events with it.
     frames_completed: u64,
 
+    /// The `measure(UNSPECIFIED)` answer last pushed into GTK sizing: the
+    /// `size_request` floor for non-stretch axes and the point a renegotiation
+    /// last ran from. A surface's intrinsic size can arrive after the widget
+    /// exists — a fetched image, a video that just learned its aspect — and
+    /// without the compare-and-resize below the `GLArea` keeps its
+    /// creation-time answer, so a surface created empty stays collapsed at
+    /// zero allocation and can never present a frame.
+    sizing_snapshot: std::cell::Cell<Option<(f32, f32)>>,
+
     // Used only for querying framebuffer properties.
     glow: Option<Rc<glow::Context>>,
     /// Owns the GL runtime libraries behind every entry point the glow
@@ -164,6 +176,7 @@ impl DeviceSharedResources {
 impl GpuState {
     fn new(gpu_surface: GpuSurface, env: Environment) -> Self {
         let msaa_max_samples = gpu_surface.msaa_sample_limit();
+        let creation_measure = gpu_surface.measure(ProposalSize::UNSPECIFIED).size;
         Self {
             start_time: Instant::now(),
             last_frame_time: Instant::now()
@@ -193,6 +206,10 @@ impl GpuState {
             glow: None,
             gl_resolver: None,
             frames_completed: 0,
+            sizing_snapshot: std::cell::Cell::new(Some((
+                creation_measure.width,
+                creation_measure.height,
+            ))),
         }
     }
 }
@@ -252,11 +269,20 @@ fn install_redraw_waker(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
     let area_guard = Arc::new(gtk4::glib::thread_guard::ThreadGuard::new(
         gtk4::prelude::ObjectExt::downgrade(area),
     ));
+    // The state is likewise not `Send`; the guard dereferences it only back
+    // on the main context's thread, where `invoke` runs the closure.
+    let state_guard = Arc::new(gtk4::glib::thread_guard::ThreadGuard::new(Rc::clone(state)));
     let main_context = gtk4::glib::MainContext::default();
     let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
         let area_guard = Arc::clone(&area_guard);
+        let state_guard = Arc::clone(&state_guard);
         main_context.invoke(move || {
             if let Some(area) = area_guard.get_ref().upgrade() {
+                // An invalidation that asks for a redraw can also be the
+                // first sign of an intrinsic size (a fetched image, a video
+                // that just decoded its aspect): GTK sizing must follow the
+                // surface's live measure or the `GLArea` stays collapsed.
+                sync_surface_sizing(&area, state_guard.get_ref());
                 area.queue_render();
             }
         });
@@ -1073,6 +1099,28 @@ fn install_input_controllers(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>)
     area.add_controller(zoom);
 }
 
+/// Re-runs the surface's GTK sizing and renegotiates when its own
+/// `measure(UNSPECIFIED)` answer moved. A surface's intrinsic size can arrive
+/// after the widget exists — a fetched image publishing its first frame, a
+/// video learning its aspect ratio — and the creation-time `size_request`
+/// plus the natural answer the measure provider reports must follow it: a
+/// `GLArea` left at its empty-measure zero stays zero-allocated, and GTK
+/// never emits `render` for a widget with no pixels to draw.
+fn sync_surface_sizing(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
+    let st = state.borrow();
+    let Some(surface) = st.gpu_surface.as_ref() else {
+        return;
+    };
+    let measured = surface.measure(ProposalSize::UNSPECIFIED).size;
+    let snapshot = (measured.width, measured.height);
+    if st.sizing_snapshot.get() == Some(snapshot) {
+        return;
+    }
+    st.sizing_snapshot.set(Some(snapshot));
+    apply_stretch_sizing(area, surface);
+    area.queue_resize();
+}
+
 /// Sizes the `GLArea` to honor the surface's layout contract instead of
 /// assuming it is greedy on both axes: a non-stretch axis takes its extent
 /// from the view's own measurement (an aspect-ratio renderer, a fixed-size
@@ -1151,6 +1199,44 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
 
     let wants_input_events = gpu_surface.wants_input_events();
     let state = Rc::new(RefCell::new(GpuState::new(gpu_surface, env)));
+
+    // The surface's own measure answers layout probes: it encodes the same
+    // stretch-fill semantics `leaf_measure` approximates (a stretch axis
+    // echoes the proposal) plus the intrinsic fallback a `GtkGLArea` cannot
+    // know (an aspect-ratio video's height, a loaded image's pixel grid).
+    // Answering live matters as much as answering at all — the intrinsic
+    // arrives after creation, and `sync_surface_sizing` renegotiates when it
+    // does. While the surface is checked out for setup the probe falls back
+    // to GTK's measure, the transient honest answer.
+    install_measure_provider(&area, {
+        let state = Rc::clone(&state);
+        move |_, proposal, _resolved| {
+            let st = state.borrow();
+            st.gpu_surface
+                .as_ref()
+                .map(|surface| surface.measure(proposal))
+        }
+    });
+    install_axis_provider(&area, {
+        let state = Rc::clone(&state);
+        move |w| {
+            state.borrow().gpu_surface.as_ref().map_or_else(
+                || reported_axis(w).unwrap_or(StretchAxis::Both),
+                |surface| surface.stretch_axis(),
+            )
+        }
+    });
+    install_priority_provider(&area, {
+        let state = Rc::clone(&state);
+        move |_| {
+            state
+                .borrow()
+                .gpu_surface
+                .as_ref()
+                .map_or(0, |surface| surface.priority())
+        }
+    });
+
     install_input_controllers(&area, &state);
     // A view that draws its own interactive content — a browser page, a
     // terminal, an editor — takes the raw events instead of the per-frame
@@ -1185,6 +1271,28 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
             area.height()
         );
         area.queue_render();
+    });
+
+    // GTK has no public size-allocate signal, so the zero/nonzero crossing
+    // is observed on the frame clock: crossing into a nonzero allocation is
+    // the moment the surface becomes drawable, which the e2e readiness gate
+    // counts as the set that owes a completed frame. A surface that stays
+    // zero — a view whose content has not arrived — legitimately never
+    // renders.
+    let was_allocated = std::cell::Cell::new(false);
+    area.add_tick_callback(move |area, _clock| {
+        let allocated = area.width() > 0 && area.height() > 0;
+        if allocated && !was_allocated.replace(true) {
+            tracing::debug!(
+                "[gtk-gpu] GLArea allocated surface_id={} size={}x{}",
+                area.as_ptr() as usize,
+                area.width(),
+                area.height()
+            );
+        } else if !allocated {
+            was_allocated.set(false);
+        }
+        gtk4::glib::ControlFlow::Continue
     });
 
     area.connect_unrealize({
