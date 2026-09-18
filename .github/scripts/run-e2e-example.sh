@@ -199,6 +199,9 @@ run_example() {
     created_surface_ids() {
         grep -oE 'create GLArea widget surface_id=[0-9]+' "${log}" | grep -oE '[0-9]+$' | sort -u
     }
+    allocated_surface_ids() {
+        grep -oE 'GLArea allocated surface_id=[0-9]+' "${log}" | grep -oE '[0-9]+$' | sort -u
+    }
     rendered_surface_ids() {
         grep -oE 'surface render complete surface_id=[0-9]+' "${log}" | grep -oE '[0-9]+$' | sort -u
     }
@@ -212,7 +215,13 @@ run_example() {
     readiness_met() {
         (($(created_surface_ids | wc -l) >= MIN_GPU_SURFACES)) || return 1
         (($(created_host_ids | wc -l) >= MIN_FILTER_HOSTS)) || return 1
-        comm -23 <(created_surface_ids) <(rendered_surface_ids) | grep -q . && return 1
+        # A surface owes a completed frame only once GTK gave it pixels:
+        # gtk_gl_area_snapshot returns early on a zero allocation, so a
+        # created-but-never-allocated GLArea (a surface whose content has
+        # not arrived, or one laid out at zero) legitimately never emits
+        # render. Counting every created widget made reply and video_player
+        # fail readiness on a drawable set of zero.
+        comm -23 <(allocated_surface_ids) <(rendered_surface_ids) | grep -q . && return 1
         comm -23 <(created_host_ids) <(presented_host_ids) | grep -q . && return 1
         # Content readiness is sequenced, not just present: map logs
         # "activated prepared GPU map" while building the very frame that
@@ -251,12 +260,13 @@ run_example() {
         if ((record)) && [[ -s ${shot} ]]; then
             cp "${shot}" "${record_dir}/${name}.png"
         fi
-        local n_surfaces n_hosts unresolved_surfaces unresolved_hosts detail
+        local n_surfaces n_hosts unresolved_surfaces unallocated_surfaces unresolved_hosts detail
         n_surfaces=$(created_surface_ids | wc -l | tr -d ' ')
         n_hosts=$(created_host_ids | wc -l | tr -d ' ')
-        unresolved_surfaces=$(comm -23 <(created_surface_ids) <(rendered_surface_ids) | tr '\n' ' ')
+        unresolved_surfaces=$(comm -23 <(allocated_surface_ids) <(rendered_surface_ids) | tr '\n' ' ')
+        unallocated_surfaces=$(comm -23 <(created_surface_ids) <(allocated_surface_ids) | tr '\n' ' ')
         unresolved_hosts=$(comm -23 <(created_host_ids) <(presented_host_ids) | tr '\n' ' ')
-        detail="observed surfaces=${n_surfaces} hosts=${n_hosts}; unresolved surface_ids=[${unresolved_surfaces% }] host_ids=[${unresolved_hosts% }]"
+        detail="observed surfaces=${n_surfaces} hosts=${n_hosts}; unresolved surface_ids=[${unresolved_surfaces% }] unallocated surface_ids=[${unallocated_surfaces% }] host_ids=[${unresolved_hosts% }]"
         [[ -n ${READINESS_PATTERN} ]] \
             && detail="${detail}, sequence '${READINESS_PATTERN}' + render-complete unmet"
         stop_launcher "${launcher}"
