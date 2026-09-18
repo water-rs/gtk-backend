@@ -1196,7 +1196,7 @@ impl SurfaceInputSink for GpuSurfaceInput {
 fn install_surface_providers(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
     install_measure_provider(area.upcast_ref(), {
         let state = Rc::clone(state);
-        move |_, proposal, _resolved| {
+        move |_, proposal, _resolved, _memo| {
             let st = state.borrow();
             st.gpu_surface
                 .as_ref()

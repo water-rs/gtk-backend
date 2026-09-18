@@ -44,9 +44,9 @@ impl GtkComponent for Native<Dynamic> {
         // `None`/non-finite extents and explicit guides included — lands on
         // the live child, and `None` while it holds nothing leaves GTK's own
         // measure to answer for the empty box.
-        install_measure_provider(container.upcast_ref(), |w, proposal, resolved| {
+        install_measure_provider(container.upcast_ref(), |w, proposal, resolved, memo| {
             w.first_child()
-                .map(|child| measure_view(&child, proposal, resolved))
+                .map(|child| measure_view(&child, proposal, resolved, memo))
         });
 
         // Dynamic updates can happen later; render updates using a fresh renderer to avoid

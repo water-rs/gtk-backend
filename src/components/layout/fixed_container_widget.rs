@@ -29,7 +29,9 @@ use crate::layout::proposal::{
     install_axis_provider, install_proposal_sink, proposals_equal, query_axis, reported_axis,
     scroll_axes_for, scroll_offer,
 };
-use crate::layout::{FixedSizeSubView, GtkSubView, apply_placements};
+use crate::layout::{
+    FixedSizeSubView, GtkSubView, LayoutMeasureMemo, apply_placements, layout_measure_key,
+};
 use crate::util::store_watcher_guards;
 
 fn layout_debug_enabled() -> bool {
@@ -128,9 +130,16 @@ mod imp {
         }
     }
 
-    /// One pass's measure answers keyed by `(widget, orientation, for_size)`:
-    /// `(min_width, min_height, natural_width, natural_height)`.
-    type MeasureMemo = std::collections::HashMap<(usize, i32, i32), (i32, i32, i32, i32)>;
+    /// One pass's measure answers: `(widget, orientation, for_size)` →
+    /// `(min_width, min_height, natural_width, natural_height)` for the GTK
+    /// minimum floor, plus the shared container-layout memo the `GtkSubView`
+    /// wrappers carry down the natural pass so each nested container is
+    /// probed once per distinct proposal.
+    #[derive(Default)]
+    struct MeasureMemo {
+        gtk: std::collections::HashMap<(usize, i32, i32), (i32, i32, i32, i32)>,
+        layout: LayoutMeasureMemo,
+    }
 
     const fn orientation_key(orientation: gtk4::Orientation) -> i32 {
         match orientation {
@@ -164,11 +173,11 @@ mod imp {
                 orientation_key(orientation),
                 for_size,
             );
-            if let Some(&hit) = memo.get(&key) {
+            if let Some(&hit) = memo.gtk.get(&key) {
                 return hit;
             }
             let result = self.measure_uncached(orientation, for_size, memo);
-            memo.insert(key, result);
+            memo.gtk.insert(key, result);
             result
         }
 
@@ -195,7 +204,7 @@ mod imp {
             // and `measure_layout` handles an empty child set correctly.
             let subviews: Vec<GtkSubView> = children
                 .iter()
-                .map(|(w, axis)| GtkSubView::new(w.clone(), *axis))
+                .map(|(w, axis)| GtkSubView::with_memo(w.clone(), *axis, Some(memo.layout.clone())))
                 .collect();
 
             let refs: Vec<&dyn SubView> = subviews.iter().map(|v| v as &dyn SubView).collect();
@@ -307,7 +316,28 @@ glib::wrapper! {
 }
 
 impl WuiFixedContainer {
-    pub(crate) fn layout_measure(&self, proposal: ProposalSize) -> ViewDimensions {
+    /// Measures this container's layout under `proposal`, sharing `memo`
+    /// across the negotiation.
+    ///
+    /// `measure_layout` memoizes children only for the duration of its own
+    /// call, so without a shared map every proposal a parent probes re-runs
+    /// this container's whole subtree — and stack distribution probes at the
+    /// unspecified, minimum, ideal, and allocated mains plus place and guide
+    /// resolution, which multiplies with each nesting level. One map shared
+    /// by every `GtkSubView` in the pass collapses the negotiation to one
+    /// measure per `(container, proposal)` pair.
+    pub(crate) fn layout_measure_shared(
+        &self,
+        proposal: ProposalSize,
+        memo: Option<&LayoutMeasureMemo>,
+    ) -> ViewDimensions {
+        let key = memo.map(|_| layout_measure_key(self.upcast_ref(), proposal));
+        if let (Some(memo), Some(key)) = (memo, key)
+            && let Some(dimensions) = memo.borrow().get(&key)
+        {
+            return dimensions.clone();
+        }
+
         let imp = self.imp();
         let layout_borrow = imp.layout.borrow();
         let Some(layout) = layout_borrow.as_ref() else {
@@ -320,11 +350,15 @@ impl WuiFixedContainer {
         // minimum length.
         let subviews: Vec<GtkSubView> = children
             .iter()
-            .map(|(w, axis)| GtkSubView::new(w.clone(), *axis))
+            .map(|(w, axis)| GtkSubView::with_memo(w.clone(), *axis, memo.cloned()))
             .collect();
         let refs: Vec<&dyn SubView> = subviews.iter().map(|v| v as &dyn SubView).collect();
 
-        measure_layout(layout.as_ref(), proposal, &refs)
+        let dimensions = measure_layout(layout.as_ref(), proposal, &refs);
+        if let (Some(memo), Some(key)) = (memo, key) {
+            memo.borrow_mut().insert(key, dimensions.clone());
+        }
+        dimensions
     }
 
     /// Runs the layout engine at `width`×`height` and allocates each child at
@@ -347,7 +381,9 @@ impl WuiFixedContainer {
 
         let subviews: Vec<GtkSubView> = children
             .iter()
-            .map(|(w, axis)| GtkSubView::new(w.clone(), *axis))
+            .map(|(w, axis)| {
+                GtkSubView::with_memo(w.clone(), *axis, Some(LayoutMeasureMemo::default()))
+            })
             .collect();
         let refs: Vec<&dyn SubView> = subviews.iter().map(|v| v as &dyn SubView).collect();
 
@@ -750,7 +786,7 @@ mod tests {
             ProposalSize::UNSPECIFIED,
             ProposalSize::INFINITY,
         ] {
-            let _ = inner.layout_measure(probe);
+            let _ = inner.layout_measure_shared(probe, None);
             assert_eq!(
                 inner.imp().selected_proposal.get(),
                 Some(chosen),
@@ -797,8 +833,8 @@ mod tests {
         assert_eq!(inner_placed.borrow().last().copied(), Some(first));
 
         // Unrelated probes between placements must not disturb the packet.
-        let _ = inner.layout_measure(ProposalSize::ZERO);
-        let _ = inner.layout_measure(ProposalSize::INFINITY);
+        let _ = inner.layout_measure_shared(ProposalSize::ZERO, None);
+        let _ = inner.layout_measure_shared(ProposalSize::INFINITY, None);
         assert_eq!(inner.imp().selected_proposal.get(), Some(first));
 
         parent_selected.set(second);
