@@ -3,7 +3,9 @@
 //! Implementation strategy:
 //! - Use `GtkGLArea` to obtain a per-widget OpenGL context + framebuffer.
 //! - Create a wgpu device/queue from the *current* GL context via wgpu-hal "external" adapter.
-//! - Each frame, wrap the `GtkGLArea` framebuffer as a wgpu texture and let `GpuSurface` render into it.
+//! - Each frame, let `GpuSurface` render into an offscreen wgpu texture and present it onto the
+//!   `GtkGLArea` framebuffer with a vertically flipped blit — the same correction wgpu-hal's own
+//!   EGL present applies, because gles shaders emit `gl_Position` in wgpu's coordinate space.
 //!
 //! This avoids any window-system-specific surface creation (Wayland/X11) and keeps GL details
 //! fully internal to the GTK backend.
@@ -39,7 +41,7 @@ use waterui_graphics::gpu_surface::{
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::{SceneEngine, SharedSceneRenderer};
 
-use super::gl_util::{GlProcResolver, make_gl_resolver, texture_format_desc};
+use super::gl_util::{GlProcResolver, make_gl_resolver};
 use crate::browser_input::{SurfaceInputSink, install as install_surface_input};
 use crate::component::GtkComponent;
 use crate::renderer::{CSS_CLASS_DYNAMIC_RANGE_HDR, CSS_CLASS_DYNAMIC_RANGE_SDR, GtkRenderer};
@@ -103,11 +105,11 @@ struct GpuState {
     /// setup) captures the generation it started under and discards its result
     /// when the GL context it was created against is gone.
     context_generation: u64,
-    /// The external framebuffer texture wrapped for wgpu, keyed by the pixel
-    /// size and GL attachment it was created for. Re-wrapping (and the
-    /// format-introspection assert) only happens when either changes, not per
-    /// frame.
-    cached_target: Option<CachedExternalTarget>,
+    /// The offscreen wgpu texture the renderer draws each frame into, keyed by
+    /// the pixel size it was created for. The frame is presented onto the
+    /// GLArea's framebuffer by a vertically flipped blit; the texture only
+    /// has to be recreated when the size changes, not per frame.
+    cached_target: Option<CachedRenderTarget>,
 
     pointer: PointerState,
     gesture: GestureState,
@@ -196,9 +198,8 @@ impl GpuState {
 }
 
 #[derive(Debug)]
-struct CachedExternalTarget {
+struct CachedRenderTarget {
     size: PixelSize,
-    attachment: glow::NativeFramebuffer,
     texture: wgpu::Texture,
 }
 
@@ -392,40 +393,65 @@ fn current_framebuffer(gl: &glow::Context) -> glow::NativeFramebuffer {
     }))
 }
 
-const FRAMEBUFFER_ATTACHMENT_TEXTURE_TARGET_PNAME: u32 = 0x8CD2;
-
+/// Presents `texture` — the frame the renderer just drew — onto the
+/// framebuffer GTK bound for this paint, flipping it vertically.
+///
+/// wgpu's gles backend compiles shaders with `ADJUST_COORDINATE_SPACE`, so
+/// render-pass output lands in textures with the image top at row 0 while a
+/// GL framebuffer presents row 0 at the bottom; wgpu's own EGL present path
+/// undoes the same flip with a Y-inverted blit, and this does the same for
+/// the GLArea's framebuffer.
 #[allow(
-    clippy::cast_sign_loss,
-    reason = "OpenGL enums and object names are non-negative"
+    clippy::cast_possible_wrap,
+    reason = "GL pixel coordinates fit i32 by widget allocation limits"
 )]
-fn current_color_attachment(gl: &glow::Context) -> glow::NativeFramebuffer {
-    // SAFETY: the caller runs with the GtkGLArea's GL context current on this
-    // thread; this query only reads driver state for the bound framebuffer.
-    let obj_type = unsafe {
-        gl.get_framebuffer_attachment_parameter_i32(
-            glow::FRAMEBUFFER,
-            glow::COLOR_ATTACHMENT0,
-            glow::FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,
-        )
-    } as u32;
+fn blit_to_framebuffer(
+    gl: &glow::Context,
+    texture: &wgpu::Texture,
+    draw_fbo: glow::NativeFramebuffer,
+    size: PixelSize,
+) {
+    // SAFETY: `texture` was created by `device.create_texture` on this
+    // surface's gles device and outlives this call, so its hal resource
+    // exists and its GL object is live in the context current on this thread.
+    let hal_texture = unsafe { texture.as_hal::<wgpu::hal::api::Gles>() }
+        .expect("GpuSurface(GL): render target has no gles texture");
+    let &wgpu::hal::gles::TextureInner::Texture { raw, target } = &hal_texture.inner else {
+        panic!("GpuSurface(GL): render target is not a plain gles texture");
+    };
 
-    match obj_type {
-        glow::RENDERBUFFER => current_framebuffer(gl),
-        glow::TEXTURE => {
-            // SAFETY: same current-context invariant as the query above.
-            let target = unsafe {
-                gl.get_framebuffer_attachment_parameter_i32(
-                    glow::FRAMEBUFFER,
-                    glow::COLOR_ATTACHMENT0,
-                    FRAMEBUFFER_ATTACHMENT_TEXTURE_TARGET_PNAME,
-                )
-            } as u32;
-            tracing::debug!(
-                "[gtk-gpu] texture-backed default FBO target=0x{target:x}; using external framebuffer path"
-            );
-            current_framebuffer(gl)
-        }
-        other => panic!("GpuSurface(GL): unexpected color attachment type {other}"),
+    // SAFETY: the GLArea's GL context is current on this thread (GTK makes it
+    // current before the render signal). `raw` is a live `size` texture,
+    // `draw_fbo` is the framebuffer GTK bound for this paint, and the source
+    // framebuffer is created, used, and deleted within the same context.
+    unsafe {
+        let src = gl
+            .create_framebuffer()
+            .expect("GpuSurface(GL): glGenFramebuffers failed");
+        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(src));
+        gl.framebuffer_texture_2d(
+            glow::READ_FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            target,
+            Some(raw),
+            0,
+        );
+        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(draw_fbo));
+        gl.blit_framebuffer(
+            0,
+            size.height as i32,
+            size.width as i32,
+            0,
+            0,
+            0,
+            size.width as i32,
+            size.height as i32,
+            glow::COLOR_BUFFER_BIT,
+            glow::NEAREST,
+        );
+        // Hand the framebuffer bindings back to GTK in the state it left them.
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(draw_fbo));
+        gl.delete_framebuffer(src);
     }
 }
 
@@ -813,68 +839,41 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
     let size = PixelSize::from_widget(area);
     tracing::debug!("[gtk-gpu] render frame size={}x{}", size.width, size.height);
 
-    let attachment = current_color_attachment(&glow);
+    let draw_fbo = current_framebuffer(&glow);
     let cached = {
         let st = state.borrow();
-        st.cached_target.as_ref().and_then(|cached| {
-            (cached.size == size && cached.attachment == attachment).then(|| cached.texture.clone())
-        })
+        st.cached_target
+            .as_ref()
+            .and_then(|cached| (cached.size == size).then(|| cached.texture.clone()))
     };
     let texture = cached.unwrap_or_else(|| {
-        // The framebuffer changed (resize or FBO swap): re-run the format
-        // introspection - the one point a driver could legally hand us a
-        // different attachment - and re-wrap it for wgpu. Doing this per frame
-        // was a chain of glGet round trips for an answer that cannot change
-        // between resizes.
+        // A resize can legally come with a different framebuffer attachment
+        // format, so re-run the introspection before creating the new target.
         let observed_format = query_framebuffer_format(&glow);
         assert!(
             observed_format == format,
             "GpuSurface(GL): framebuffer format changed at runtime: {format:?} -> {observed_format:?}"
         );
 
-        let hal_texture = wgpu::hal::gles::Texture {
-            inner: wgpu::hal::gles::TextureInner::ExternalNativeFramebuffer { inner: attachment },
-            drop_guard: None,
-            mip_level_count: 1,
-            array_layer_count: 1,
-            format,
-            format_desc: texture_format_desc(format),
-            copy_size: wgpu::hal::CopyExtent {
+        // TEXTURE_BINDING keeps the target a plain GL texture — wgpu-hal
+        // demotes render-only textures to renderbuffers, which cannot source
+        // the present blit — and lets renderers sample their own output.
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("WaterUI GTK GpuSurface Target"),
+            size: wgpu::Extent3d {
                 width: size.width,
                 height: size.height,
-                depth: 1,
+                depth_or_array_layers: 1,
             },
-        };
-
-        // SAFETY: `hal_texture` wraps the framebuffer the driver reported for
-        // this frame, whose introspected format was just asserted to match
-        // `format` and whose extent is the widget's current pixel size, so the
-        // descriptor describes the real attachment. The wrapped texture is
-        // only used while that attachment exists: the cache is invalidated
-        // whenever the size or attachment changes, and unrealize drops it with
-        // the GL context still current.
-        let texture = unsafe {
-            device.create_texture_from_hal::<wgpu::hal::api::Gles>(
-                hal_texture,
-                &wgpu::TextureDescriptor {
-                    label: Some("WaterUI GTK External FBO Texture"),
-                    size: wgpu::Extent3d {
-                        width: size.width,
-                        height: size.height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[],
-                },
-            )
-        };
-        state.borrow_mut().cached_target = Some(CachedExternalTarget {
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        state.borrow_mut().cached_target = Some(CachedRenderTarget {
             size,
-            attachment,
             texture: texture.clone(),
         });
         texture
@@ -899,6 +898,7 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
 
     // Let the WaterUI renderer submit work.
     gpu_surface.render(&mut frame);
+    blit_to_framebuffer(&glow, &texture, draw_fbo, size);
     let needs_redraw = frame.was_redraw_requested() || redraw_handle.take_dirty();
 
     // Keep the surface alive for the next frame.
