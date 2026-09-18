@@ -39,7 +39,7 @@ use waterui_graphics::gpu_surface::{
     preferred_msaa_samples,
 };
 use waterui_graphics::input::SurfaceInputEvent;
-use waterui_graphics::{SceneEngine, SharedSceneRenderer};
+use waterui_graphics::{DeviceLoss, SceneEngine, SharedSceneRenderer};
 
 use super::gl_util::{GlProcResolver, make_gl_resolver};
 use crate::browser_input::{SurfaceInputSink, install as install_surface_input};
@@ -88,6 +88,9 @@ struct GpuState {
     wgpu_adapter: Option<wgpu::Adapter>,
     wgpu_device: Option<wgpu::Device>,
     wgpu_queue: Option<wgpu::Queue>,
+    /// The handle that reports this device lost, taken when the device was
+    /// opened.
+    device_loss: DeviceLoss,
     device_init_in_progress: bool,
     /// Module cache and scene renderer for the device above.
     ///
@@ -188,6 +191,7 @@ impl GpuState {
             wgpu_adapter: None,
             wgpu_device: None,
             wgpu_queue: None,
+            device_loss: DeviceLoss::default(),
             device_init_in_progress: false,
             device_shared: None,
             surface_format: None,
@@ -616,6 +620,7 @@ fn init_wgpu_if_needed(
                         device.on_uncaptured_error(std::sync::Arc::new(|error: wgpu::Error| {
                             tracing::error!("[wgpu] Uncaptured error: {error}");
                         }));
+                        st.device_loss = DeviceLoss::observe(&device);
                         st.wgpu_device = Some(device);
                         st.wgpu_queue = Some(queue);
                         let format = st.surface_format.unwrap_or(wgpu::TextureFormat::Rgba8Unorm);
@@ -652,6 +657,7 @@ struct SetupInputs {
     gpu_surface: GpuSurface,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    device_loss: DeviceLoss,
     adapter: wgpu::Adapter,
     format: wgpu::TextureFormat,
     msaa_max_samples: NonZeroU32,
@@ -713,6 +719,7 @@ impl GpuState {
             gpu_surface,
             device,
             queue,
+            device_loss: self.device_loss.clone(),
             adapter,
             format,
             msaa_max_samples: self.msaa_max_samples,
@@ -746,6 +753,7 @@ fn spawn_renderer_setup(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>, inpu
         mut gpu_surface,
         device,
         queue,
+        device_loss,
         adapter,
         format,
         msaa_max_samples,
@@ -771,6 +779,7 @@ fn spawn_renderer_setup(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>, inpu
                 &scene_renderer,
                 msaa_max_samples,
                 redraw_handle,
+                device_loss,
             );
             gpu_surface.setup(&ctx, &mut env).await;
             {
@@ -1331,6 +1340,7 @@ fn install_gl_lifecycle(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) {
             st.cached_target = None;
             st.wgpu_queue = None;
             st.wgpu_device = None;
+            st.device_loss = DeviceLoss::default();
             st.device_init_in_progress = false;
             // Compiled shader modules and vello pipelines belong to the device
             // that just died; the next realized context builds its own.
