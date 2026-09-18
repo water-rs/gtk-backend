@@ -1208,7 +1208,7 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
     // arrives after creation, and `sync_surface_sizing` renegotiates when it
     // does. While the surface is checked out for setup the probe falls back
     // to GTK's measure, the transient honest answer.
-    install_measure_provider(&area, {
+    install_measure_provider(area.upcast_ref(), {
         let state = Rc::clone(&state);
         move |_, proposal, _resolved| {
             let st = state.borrow();
@@ -1217,7 +1217,7 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
                 .map(|surface| surface.measure(proposal))
         }
     });
-    install_axis_provider(&area, {
+    install_axis_provider(area.upcast_ref(), {
         let state = Rc::clone(&state);
         move |w| {
             state.borrow().gpu_surface.as_ref().map_or_else(
@@ -1226,7 +1226,7 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
             )
         }
     });
-    install_priority_provider(&area, {
+    install_priority_provider(area.upcast_ref(), {
         let state = Rc::clone(&state);
         move |_| {
             state
