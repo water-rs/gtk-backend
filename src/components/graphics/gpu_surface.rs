@@ -872,40 +872,78 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             .as_ref()
             .and_then(|cached| (cached.size == size).then(|| cached.texture.clone()))
     };
-    let texture = cached.unwrap_or_else(|| {
-        // A resize can legally come with a different framebuffer attachment
-        // format, so re-run the introspection before creating the new target.
-        let observed_format = query_framebuffer_format(&glow);
-        assert!(
-            observed_format == format,
-            "GpuSurface(GL): framebuffer format changed at runtime: {format:?} -> {observed_format:?}"
-        );
+    let (texture, fresh_target) = match cached {
+        Some(texture) => (texture, false),
+        None => {
+            // A resize can legally come with a different framebuffer attachment
+            // format, so re-run the introspection before creating the new target.
+            let observed_format = query_framebuffer_format(&glow);
+            assert!(
+                observed_format == format,
+                "GpuSurface(GL): framebuffer format changed at runtime: {format:?} -> {observed_format:?}"
+            );
 
-        // TEXTURE_BINDING keeps the target a plain GL texture — wgpu-hal
-        // demotes render-only textures to renderbuffers, which cannot source
-        // the present blit — and lets renderers sample their own output.
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("WaterUI GTK GpuSurface Target"),
-            size: wgpu::Extent3d {
-                width: size.width,
-                height: size.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        state.borrow_mut().cached_target = Some(CachedRenderTarget {
-            size,
-            texture: texture.clone(),
-        });
-        texture
-    });
+            // TEXTURE_BINDING keeps the target a plain GL texture — wgpu-hal
+            // demotes render-only textures to renderbuffers, which cannot source
+            // the present blit — and lets renderers sample their own output.
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("WaterUI GTK GpuSurface Target"),
+                size: wgpu::Extent3d {
+                    width: size.width,
+                    height: size.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            state.borrow_mut().cached_target = Some(CachedRenderTarget {
+                size,
+                texture: texture.clone(),
+            });
+            (texture, true)
+        }
+    };
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    if fresh_target {
+        // A `GpuSurface` is a leaf render target, and every platform surface
+        // starts opaque black: `MTKView` defaults `isOpaque` with a black
+        // `clearColor`, an Android `SurfaceView` opens black, a fresh
+        // swapchain image is black. A renderer that has produced no pixels
+        // yet — a video player still fetching its first frame — must present
+        // that black surface, not the zero-alpha hole a newly allocated
+        // texture otherwise leaves for the window behind it. Compositing
+        // renderers are unaffected: they clear their own background
+        // (`TRANSPARENT`) in every frame they draw.
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("WaterUI GTK GpuSurface Target Init"),
+        });
+        {
+            let _init = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("WaterUI GTK GpuSurface Target Init"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
+        queue.submit([encoder.finish()]);
+    }
 
     let mut frame = GpuFrame::new(
         &device,
