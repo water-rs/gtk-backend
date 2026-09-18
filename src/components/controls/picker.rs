@@ -145,7 +145,7 @@ impl GtkComponent for Native<PickerConfig> {
 /// enforce single selection through GTK itself.
 fn render_radio_group(env: &Environment, config: PickerConfig) -> Widget {
     let container = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-    container.set_accessible_role(gtk4::accessible::Role::RadioGroup);
+    container.set_accessible_role(gtk4::AccessibleRole::RadioGroup);
     {
         let label = config
             .label
@@ -220,10 +220,10 @@ fn render_radio_group(env: &Environment, config: PickerConfig) -> Widget {
                 let ids = ids.borrow();
                 let buttons = buttons.borrow();
                 if let Some(index) = ids.iter().position(|id| *id == value)
-                    && let Some(button) = buttons.get(index)
-                    && !button.is_active()
+                    && index < buttons.len()
+                    && !buttons[index].is_active()
                 {
-                    button.set_active(true);
+                    buttons[index].set_active(true);
                 }
             });
         }
