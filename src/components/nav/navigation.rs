@@ -17,6 +17,7 @@ use waterui_navigation::{
 };
 
 use crate::component::GtkComponent;
+use crate::components::nav::enforce_single_line_labels;
 use crate::renderer::GtkRenderer;
 use crate::util::{ScopedCss, resolved_color_to_css_rgba, store_watcher_guards};
 
@@ -71,6 +72,7 @@ fn render_navigation_bar(
     if !bar.subtitle.is::<()>() {
         title_box.append(&renderer.render_any(bar.subtitle, env));
     }
+    enforce_single_line_labels(title_box.upcast_ref());
 
     let principal = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
     let leading = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
