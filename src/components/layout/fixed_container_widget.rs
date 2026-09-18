@@ -109,6 +109,80 @@ mod imp {
             reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
         )]
         fn measure(&self, orientation: gtk4::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            let mut memo = MeasureMemo::default();
+            let (min_w, min_h, w, h) = self.measure_inner(orientation, for_size, &mut memo);
+            match orientation {
+                gtk4::Orientation::Horizontal => (min_w, w, -1, -1),
+                gtk4::Orientation::Vertical => (min_h, h, -1, -1),
+                _ => panic!("WuiFixedContainer: unexpected orientation {orientation:?}"),
+            }
+        }
+
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+        )]
+        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            self.parent_size_allocate(width, height, baseline);
+            self.obj().place_children(width, height, "allocate");
+        }
+    }
+
+    /// One pass's measure answers keyed by `(widget, orientation, for_size)`:
+    /// `(min_width, min_height, natural_width, natural_height)`.
+    type MeasureMemo = std::collections::HashMap<(usize, i32, i32), (i32, i32, i32, i32)>;
+
+    fn orientation_key(orientation: gtk4::Orientation) -> i32 {
+        match orientation {
+            gtk4::Orientation::Horizontal => 0,
+            gtk4::Orientation::Vertical => 1,
+            _ => 2,
+        }
+    }
+
+    impl WuiFixedContainer {
+        /// The measure computation behind `measure`, memoized per
+        /// `(widget, orientation, for_size)` within a single negotiation.
+        ///
+        /// The minimum floor asks every child for *both* orientations, so
+        /// asking a nested container through GTK's `Widget::measure` makes
+        /// each level re-run the whole subtree's min computation — O(2^depth)
+        /// leaf measures per negotiation, which stalls the main loop for
+        /// tens of seconds on a picker-deep tree and keeps the window from
+        /// ever reaching its first paint. Container children are therefore
+        /// answered through this memoized path instead of GTK dispatch; a
+        /// node is queried under at most three `(orientation, for_size)`
+        /// variants per pass, so a negotiation stays linear in the tree.
+        fn measure_inner(
+            &self,
+            orientation: gtk4::Orientation,
+            for_size: i32,
+            memo: &mut MeasureMemo,
+        ) -> (i32, i32, i32, i32) {
+            let key = (
+                self.obj().upcast_ref::<Widget>().as_ptr() as usize,
+                orientation_key(orientation),
+                for_size,
+            );
+            if let Some(&hit) = memo.get(&key) {
+                return hit;
+            }
+            let result = self.measure_uncached(orientation, for_size, memo);
+            memo.insert(key, result);
+            result
+        }
+
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_precision_loss,
+            reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+        )]
+        fn measure_uncached(
+            &self,
+            orientation: gtk4::Orientation,
+            for_size: i32,
+            memo: &mut MeasureMemo,
+        ) -> (i32, i32, i32, i32) {
             let layout_borrow = self.layout.borrow();
             let Some(layout) = layout_borrow.as_ref() else {
                 panic!("WuiFixedContainer: missing layout (internal error)");
@@ -156,17 +230,14 @@ mod imp {
                 .iter()
                 .map(|(widget, axis)| {
                     let (min_w, min_h) = match orientation {
-                        gtk4::Orientation::Horizontal => {
-                            let (min_w, ..) =
-                                widget.measure(gtk4::Orientation::Horizontal, for_size);
-                            let (min_h, ..) = widget.measure(gtk4::Orientation::Vertical, -1);
-                            (min_w, min_h)
-                        }
-                        gtk4::Orientation::Vertical => {
-                            let (min_w, ..) = widget.measure(gtk4::Orientation::Horizontal, -1);
-                            let (min_h, ..) = widget.measure(gtk4::Orientation::Vertical, for_size);
-                            (min_w, min_h)
-                        }
+                        gtk4::Orientation::Horizontal => (
+                            child_min(widget, gtk4::Orientation::Horizontal, for_size, memo),
+                            child_min(widget, gtk4::Orientation::Vertical, -1, memo),
+                        ),
+                        gtk4::Orientation::Vertical => (
+                            child_min(widget, gtk4::Orientation::Horizontal, -1, memo),
+                            child_min(widget, gtk4::Orientation::Vertical, for_size, memo),
+                        ),
                         _ => panic!("WuiFixedContainer: unexpected orientation {orientation:?}"),
                     };
                     FixedSizeSubView::new(
@@ -197,20 +268,30 @@ mod imp {
                     "Measured GTK fixed container"
                 );
             }
+            (min_w, min_h, w, h)
+        }
+    }
+
+    /// The GTK minimum `widget` reports for `orientation` under `for_size`.
+    /// A `WuiFixedContainer` child answers through the memoized inner pass so
+    /// its subtree is measured once per pass instead of once per calling
+    /// orientation; native leaves go through `Widget::measure`, the honest
+    /// channel for GTK widgets.
+    fn child_min(
+        widget: &Widget,
+        orientation: gtk4::Orientation,
+        for_size: i32,
+        memo: &mut MeasureMemo,
+    ) -> i32 {
+        if let Some(container) = widget.downcast_ref::<super::WuiFixedContainer>() {
+            let (min_w, min_h, ..) = container.imp().measure_inner(orientation, for_size, memo);
             match orientation {
-                gtk4::Orientation::Horizontal => (min_w, w, -1, -1),
-                gtk4::Orientation::Vertical => (min_h, h, -1, -1),
+                gtk4::Orientation::Horizontal => min_w,
+                gtk4::Orientation::Vertical => min_h,
                 _ => panic!("WuiFixedContainer: unexpected orientation {orientation:?}"),
             }
-        }
-
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
-        )]
-        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
-            self.parent_size_allocate(width, height, baseline);
-            self.obj().place_children(width, height, "allocate");
+        } else {
+            widget.measure(orientation, for_size).0
         }
     }
 }
