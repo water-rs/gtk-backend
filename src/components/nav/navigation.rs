@@ -72,7 +72,7 @@ fn render_navigation_bar(
     if !bar.subtitle.is::<()>() {
         title_box.append(&renderer.render_any(bar.subtitle, env));
     }
-    enforce_single_line_labels(title_box.upcast_ref());
+    enforce_single_line_labels(title_box.upcast_ref(), gtk4::pango::EllipsizeMode::End);
 
     let principal = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
     let leading = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
