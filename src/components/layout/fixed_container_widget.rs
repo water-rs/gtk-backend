@@ -132,7 +132,7 @@ mod imp {
     /// `(min_width, min_height, natural_width, natural_height)`.
     type MeasureMemo = std::collections::HashMap<(usize, i32, i32), (i32, i32, i32, i32)>;
 
-    fn orientation_key(orientation: gtk4::Orientation) -> i32 {
+    const fn orientation_key(orientation: gtk4::Orientation) -> i32 {
         match orientation {
             gtk4::Orientation::Horizontal => 0,
             gtk4::Orientation::Vertical => 1,
@@ -283,16 +283,20 @@ mod imp {
         for_size: i32,
         memo: &mut MeasureMemo,
     ) -> i32 {
-        if let Some(container) = widget.downcast_ref::<super::WuiFixedContainer>() {
-            let (min_w, min_h, ..) = container.imp().measure_inner(orientation, for_size, memo);
-            match orientation {
-                gtk4::Orientation::Horizontal => min_w,
-                gtk4::Orientation::Vertical => min_h,
-                _ => panic!("WuiFixedContainer: unexpected orientation {orientation:?}"),
-            }
-        } else {
-            widget.measure(orientation, for_size).0
-        }
+        widget
+            .downcast_ref::<super::WuiFixedContainer>()
+            .map_or_else(
+                || widget.measure(orientation, for_size).0,
+                |container| {
+                    let (min_w, min_h, ..) =
+                        container.imp().measure_inner(orientation, for_size, memo);
+                    match orientation {
+                        gtk4::Orientation::Horizontal => min_w,
+                        gtk4::Orientation::Vertical => min_h,
+                        _ => panic!("WuiFixedContainer: unexpected orientation {orientation:?}"),
+                    }
+                },
+            )
     }
 }
 

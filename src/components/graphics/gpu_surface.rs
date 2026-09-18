@@ -107,7 +107,7 @@ struct GpuState {
     context_generation: u64,
     /// The offscreen wgpu texture the renderer draws each frame into, keyed by
     /// the pixel size it was created for. The frame is presented onto the
-    /// GLArea's framebuffer by a vertically flipped blit; the texture only
+    /// `GLArea`'s framebuffer by a vertically flipped blit; the texture only
     /// has to be recreated when the size changes, not per frame.
     cached_target: Option<CachedRenderTarget>,
 
@@ -400,7 +400,7 @@ fn current_framebuffer(gl: &glow::Context) -> glow::NativeFramebuffer {
 /// render-pass output lands in textures with the image top at row 0 while a
 /// GL framebuffer presents row 0 at the bottom; wgpu's own EGL present path
 /// undoes the same flip with a Y-inverted blit, and this does the same for
-/// the GLArea's framebuffer.
+/// the `GLArea`'s framebuffer.
 #[allow(
     clippy::cast_possible_wrap,
     reason = "GL pixel coordinates fit i32 by widget allocation limits"
