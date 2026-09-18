@@ -8,6 +8,7 @@ use waterui_core::{Environment, Native};
 use waterui_navigation::tab::{NativeTabStyle, TabsLayout};
 
 use crate::component::GtkComponent;
+use crate::components::nav::enforce_single_line_labels;
 use crate::renderer::GtkRenderer;
 use crate::util::store_watcher_guard;
 
@@ -38,8 +39,12 @@ impl GtkComponent for Native<TabsLayout> {
             let id = tab.id;
             tab_ids.push(id);
 
-            // Render the label
+            // Render the label. `GtkNotebook` sizes each tab to its
+            // *minimum* requisition, so a wrapping label would be
+            // squeezed to its widest unbreakable fragment and hyphenate
+            // character-by-character; tab chrome stays single-line.
             let label_widget = renderer.render_any(tab.label, env);
+            enforce_single_line_labels(&label_widget);
 
             // Build and render the content (NavigationView)
             let navigation_view = tab.content.build();
