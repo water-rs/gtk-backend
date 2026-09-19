@@ -165,6 +165,8 @@ run_example() {
     # and the write pressure alone starves the app's main loop.
     RUST_LOG="${RUST_LOG:-info,waterui_gtk=debug,waterui_graphics=debug,waterui_media=debug,waterui_map_gpu=debug}" \
         RUST_BACKTRACE=1 \
+        GDK_DEBUG=events \
+        G_MESSAGES_DEBUG="${G_MESSAGES_DEBUG:-Gdk}" \
         setsid "${bin}" >>"${log}" 2>&1 &
     launcher=$!
 
@@ -188,6 +190,17 @@ run_example() {
         echo "FAIL ${name}: no window within ${WINDOW_APPEAR_DEADLINE}s"
         return 1
     fi
+
+    # DIAGNOSTIC(#67): identify exactly which X window the captures target and
+    # how it sits in the tree (frame vs client, geometry, map state).
+    {
+        echo "== xdiag win=${win} at appear =="
+        timeout "${X_TOOL_TIMEOUT}" xwininfo -id "${win}" -all 2>&1
+        echo "== xdiag root tree =="
+        timeout "${X_TOOL_TIMEOUT}" xwininfo -root -tree 2>&1
+        echo "== xdiag xprop =="
+        timeout "${X_TOOL_TIMEOUT}" xprop -id "${win}" 2>&1
+    } >>"${log}" 2>&1
 
     # Readiness gate. The backend emits a completion event only after a
     # surface's full render path returns — never at frame entry — keyed by
@@ -275,7 +288,7 @@ run_example() {
         return 1
     fi
 
-    local prev="${shots_dir}/.${name}.prev.png" settled=0
+    local prev="${shots_dir}/.${name}.prev.png" settled=0 blank_dumped=0
     timeout "${CAPTURE_TIMEOUT}" import -window "${win}" "${prev}" >>"${log}" 2>&1
     deadline=$((SECONDS + SETTLE_DEADLINE))
     while ((SECONDS < deadline)); do
@@ -284,7 +297,22 @@ run_example() {
         # Two blank frames are trivially identical and would read as settled
         # while the window is still on its way to its first present — a blank
         # capture extends the wait, never satisfies it.
-        is_blank "${shot}" && continue
+        if is_blank "${shot}"; then
+            # DIAGNOSTIC(#67): once per run, record the live window state at a
+            # blank capture — which window this is, whether a frame exists.
+            if ((!blank_dumped)); then
+                blank_dumped=1
+                {
+                    echo "== xdiag win=${win} at blank capture =="
+                    timeout "${X_TOOL_TIMEOUT}" xwininfo -id "${win}" -all 2>&1
+                    echo "== xdiag root tree =="
+                    timeout "${X_TOOL_TIMEOUT}" xwininfo -root -tree 2>&1
+                    echo "== xdiag xprop =="
+                    timeout "${X_TOOL_TIMEOUT}" xprop -id "${win}" 2>&1
+                } >>"${log}" 2>&1
+            fi
+            continue
+        fi
         if (($(awk "BEGIN{print ($(normalized_rmse "${prev}" "${shot}") <= ${SETTLE_BUDGET})}") == 1)); then
             settled=1
             break
