@@ -495,6 +495,12 @@ impl WuiFixedContainer {
     pub(crate) fn stack_main_axis(&self) -> Option<Axis> {
         self.imp().layout.borrow().as_ref().and_then(|layout| {
             let layout = layout.as_ref() as &dyn core::any::Any;
+            eprintln!(
+                "DBG stack_main_axis: type={} is_vstack={} is_hstack={}",
+                core::any::type_name_of_val(layout),
+                layout.is::<VStackLayout>(),
+                layout.is::<HStackLayout>()
+            );
             if layout.is::<VStackLayout>() {
                 Some(Axis::Vertical)
             } else if layout.is::<HStackLayout>() {
