@@ -24,6 +24,7 @@ use waterui_core::layout::{
     Layout, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement, ViewDimensions,
     measure_layout, with_memoized_children,
 };
+use waterui_layout::stack::{Axis, HStackLayout, VStackLayout};
 
 use crate::layout::proposal::{
     install_axis_provider, install_proposal_sink, proposals_equal, query_axis, reported_axis,
@@ -471,6 +472,37 @@ impl WuiFixedContainer {
             .as_ref()
             .expect("WuiFixedContainer: missing layout (internal error)")
             .stretch_axis(&axes)
+    }
+
+    /// Whether this container's layout relays a child's `axis` claim
+    /// unchanged.
+    ///
+    /// Modifier containers (`Padding`, `Background`, `Overlay`, …) report
+    /// their content's axis, so a claim climbs past them to the layout that
+    /// decides it — the predicate a `Spacer`'s host walk uses to skip them.
+    pub(crate) fn relays_stretch_axis(&self, axis: StretchAxis) -> bool {
+        self.imp()
+            .layout
+            .borrow()
+            .as_ref()
+            .is_some_and(|layout| layout.stretch_axis(&[axis]) == axis)
+    }
+
+    /// The axis this container's layout expands a
+    /// [`StretchAxis::MainAxis`] child along — `Some` only when the layout
+    /// is one of the stacks; a `ZStack` or any other container leaves the
+    /// claim unanswered.
+    pub(crate) fn stack_main_axis(&self) -> Option<Axis> {
+        self.imp().layout.borrow().as_ref().and_then(|layout| {
+            let layout = layout.as_ref() as &dyn core::any::Any;
+            if layout.is::<VStackLayout>() {
+                Some(Axis::Vertical)
+            } else if layout.is::<HStackLayout>() {
+                Some(Axis::Horizontal)
+            } else {
+                None
+            }
+        })
     }
 
     /// Creates a container that lays `children` out with `layout`.
