@@ -63,10 +63,10 @@ jobs:
 
       - name: Hammer the example under Xvfb
         env:
-          PATH: ${{ github.workspace }}/cli-bin/bin:$PATH
           REPRO_EXAMPLE: ${{ inputs.example || 'shape' }}
           REPRO_LOOPS: ${{ inputs.loops || '60' }}
         run: |
+          export PATH="${{ github.workspace }}/cli-bin/bin:$PATH"
           xvfb-run -a -s "-screen 0 1280x1024x24" dbus-run-session -- \
             sh -c 'openbox & sleep 2; exec ./.github/scripts/repro-67.sh'
 
