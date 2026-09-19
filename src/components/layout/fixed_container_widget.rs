@@ -24,7 +24,7 @@ use waterui_core::layout::{
     Layout, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement, ViewDimensions,
     measure_layout, with_memoized_children,
 };
-use waterui_layout::stack::{Axis, HStackLayout, VStackLayout};
+use waterui_layout::stack::Axis;
 
 use crate::layout::proposal::{
     install_axis_provider, install_proposal_sink, proposals_equal, query_axis, reported_axis,
@@ -489,26 +489,28 @@ impl WuiFixedContainer {
     }
 
     /// The axis this container's layout expands a
-    /// [`StretchAxis::MainAxis`] child along — `Some` only when the layout
-    /// is one of the stacks; a `ZStack` or any other container leaves the
-    /// claim unanswered.
+    /// [`StretchAxis::MainAxis`] child along — the answer `stretch_axis`
+    /// itself gives when probed with the flexible claim: a `VStack`
+    /// resolves it to `Vertical`, an `HStack` to `Horizontal`, and any
+    /// wrapper (`DirectionalLayout`, `ScaledLayout`, …) forwards the
+    /// resolution unchanged. Anything that does not expand a flexible
+    /// child on exactly one axis — a `ZStack`, a scroll host — leaves
+    /// the claim unanswered.
     pub(crate) fn stack_main_axis(&self) -> Option<Axis> {
-        self.imp().layout.borrow().as_ref().and_then(|layout| {
-            eprintln!("DBG stack_main_axis: layout={layout:?}");
-            let layout = layout.as_ref() as &dyn core::any::Any;
-            eprintln!(
-                "DBG stack_main_axis: is_vstack={} is_hstack={}",
-                layout.is::<VStackLayout>(),
-                layout.is::<HStackLayout>()
-            );
-            if layout.is::<VStackLayout>() {
-                Some(Axis::Vertical)
-            } else if layout.is::<HStackLayout>() {
-                Some(Axis::Horizontal)
-            } else {
-                None
-            }
-        })
+        let resolved = self
+            .imp()
+            .layout
+            .borrow()
+            .as_ref()?
+            .stretch_axis(&[StretchAxis::MainAxis]);
+        match (
+            resolved.stretches_horizontal(),
+            resolved.stretches_vertical(),
+        ) {
+            (true, false) => Some(Axis::Horizontal),
+            (false, true) => Some(Axis::Vertical),
+            _ => None,
+        }
     }
 
     /// Creates a container that lays `children` out with `layout`.
@@ -901,9 +903,10 @@ mod tests {
         );
     }
 
-    /// `Spacer` renders through `SpacerLayout`: the container reports the
-    /// minimum length even with zero children, and the widget carries the
-    /// lowest default layout priority so a stack squeezes it first.
+    /// A bare `Spacer` is a leaf: GTK's own measure is zero, the widget
+    /// carries the lowest default layout priority so a stack squeezes it
+    /// first, and its minimum length materializes only against the main
+    /// axis of a deciding stack.
     #[test]
     fn spacer_reports_min_length_and_lowest_priority() {
         init();
@@ -913,10 +916,21 @@ mod tests {
             Native::new(waterui_layout::spacer::Spacer::new(10.0)).render(&env, &mut renderer);
 
         let (min_w, nat_w, ..) = widget.measure(gtk4::Orientation::Horizontal, -1);
-        assert_eq!((min_w, nat_w), (10, 10));
+        assert_eq!((min_w, nat_w), (0, 0));
 
         let subview = GtkSubView::new(widget, StretchAxis::MainAxis);
         assert_eq!(subview.priority(), i32::MIN);
+
+        // Inside a `VStack` the same length answers on the stack's axis.
+        let (content, _) = renderer.render_any_with_axis(
+            AnyView::new(waterui_layout::stack::vstack((
+                waterui_layout::spacer::Spacer::new(10.0),
+            ))),
+            &env,
+        );
+        let subview = GtkSubView::new(content, StretchAxis::None);
+        let dimensions = subview.measure(ProposalSize::UNSPECIFIED);
+        assert_eq!((dimensions.size.width, dimensions.size.height), (0.0, 10.0));
     }
 
     /// The dynamic host reads its layout-facing answers through the live

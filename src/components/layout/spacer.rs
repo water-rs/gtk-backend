@@ -24,24 +24,11 @@ use crate::renderer::GtkRenderer;
 /// or no `WaterUI` container at all — leaves the spacer claiming nothing, so
 /// it answers zero.
 fn spacer_size(widget: &Widget, min_length: f32) -> Size {
-    eprintln!("DBG spacer_size: widget={:?}", widget.type_().name());
     let mut node = widget.parent();
     while let Some(parent) = node {
-        eprintln!(
-            "DBG spacer_size: parent={:?} is_container={} relays={:?}",
-            parent.type_().name(),
-            parent.downcast_ref::<WuiFixedContainer>().is_some(),
-            parent
-                .downcast_ref::<WuiFixedContainer>()
-                .map(|c| c.relays_stretch_axis(StretchAxis::MainAxis))
-        );
         if let Some(container) = parent.downcast_ref::<WuiFixedContainer>()
             && !container.relays_stretch_axis(StretchAxis::MainAxis)
         {
-            eprintln!(
-                "DBG spacer_size: stack_main_axis={:?}",
-                container.stack_main_axis()
-            );
             return match container.stack_main_axis() {
                 Some(Axis::Vertical) => Size::new(0.0, min_length),
                 Some(Axis::Horizontal) => Size::new(min_length, 0.0),

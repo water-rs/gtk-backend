@@ -176,12 +176,6 @@ pub(crate) fn measure_view(
     let margin_v = margin_top + widget.margin_bottom() as f32;
     let inner_proposal = shrink_proposal(proposal, margin_h, margin_v);
     let resolved_axis = query_axis(widget).unwrap_or(fallback_axis);
-    eprintln!(
-        "DBG measure_view: widget={:?} has_provider={} proposal={:?}",
-        widget.type_().name(),
-        measure_provider(widget).is_some(),
-        proposal
-    );
     let inner_dimensions = if let Some(dimensions) = measure_provider(widget)
         .and_then(|provider| provider(widget, inner_proposal, resolved_axis, memo))
     {
