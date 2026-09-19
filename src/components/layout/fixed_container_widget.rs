@@ -24,6 +24,7 @@ use waterui_core::layout::{
     Layout, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement, ViewDimensions,
     measure_layout, with_memoized_children,
 };
+use waterui_layout::stack::Axis;
 
 use crate::layout::proposal::{
     install_axis_provider, install_proposal_sink, proposals_equal, query_axis, reported_axis,
@@ -473,6 +474,45 @@ impl WuiFixedContainer {
             .stretch_axis(&axes)
     }
 
+    /// Whether this container's layout relays a child's `axis` claim
+    /// unchanged.
+    ///
+    /// Modifier containers (`Padding`, `Background`, `Overlay`, …) report
+    /// their content's axis, so a claim climbs past them to the layout that
+    /// decides it — the predicate a `Spacer`'s host walk uses to skip them.
+    pub(crate) fn relays_stretch_axis(&self, axis: StretchAxis) -> bool {
+        self.imp()
+            .layout
+            .borrow()
+            .as_ref()
+            .is_some_and(|layout| layout.stretch_axis(&[axis]) == axis)
+    }
+
+    /// The axis this container's layout expands a
+    /// [`StretchAxis::MainAxis`] child along — the answer `stretch_axis`
+    /// itself gives when probed with the flexible claim: a `VStack`
+    /// resolves it to `Vertical`, an `HStack` to `Horizontal`, and any
+    /// wrapper (`DirectionalLayout`, `ScaledLayout`, …) forwards the
+    /// resolution unchanged. Anything that does not expand a flexible
+    /// child on exactly one axis — a `ZStack`, a scroll host — leaves
+    /// the claim unanswered.
+    pub(crate) fn stack_main_axis(&self) -> Option<Axis> {
+        let resolved = self
+            .imp()
+            .layout
+            .borrow()
+            .as_ref()?
+            .stretch_axis(&[StretchAxis::MainAxis]);
+        match (
+            resolved.stretches_horizontal(),
+            resolved.stretches_vertical(),
+        ) {
+            (true, false) => Some(Axis::Horizontal),
+            (false, true) => Some(Axis::Vertical),
+            _ => None,
+        }
+    }
+
     /// Creates a container that lays `children` out with `layout`.
     ///
     /// # Panics
@@ -863,9 +903,10 @@ mod tests {
         );
     }
 
-    /// `Spacer` renders through `SpacerLayout`: the container reports the
-    /// minimum length even with zero children, and the widget carries the
-    /// lowest default layout priority so a stack squeezes it first.
+    /// A bare `Spacer` is a leaf: GTK's own measure is zero, the widget
+    /// carries the lowest default layout priority so a stack squeezes it
+    /// first, and its minimum length materializes only against the main
+    /// axis of a deciding stack.
     #[test]
     fn spacer_reports_min_length_and_lowest_priority() {
         init();
@@ -875,10 +916,21 @@ mod tests {
             Native::new(waterui_layout::spacer::Spacer::new(10.0)).render(&env, &mut renderer);
 
         let (min_w, nat_w, ..) = widget.measure(gtk4::Orientation::Horizontal, -1);
-        assert_eq!((min_w, nat_w), (10, 10));
+        assert_eq!((min_w, nat_w), (0, 0));
 
         let subview = GtkSubView::new(widget, StretchAxis::MainAxis);
         assert_eq!(subview.priority(), i32::MIN);
+
+        // Inside a `VStack` the same length answers on the stack's axis.
+        let (content, _) = renderer.render_any_with_axis(
+            AnyView::new(waterui_layout::stack::vstack((
+                waterui_layout::spacer::Spacer::new(10.0),
+            ))),
+            &env,
+        );
+        let subview = GtkSubView::new(content, StretchAxis::None);
+        let dimensions = subview.measure(ProposalSize::UNSPECIFIED);
+        assert_eq!((dimensions.size.width, dimensions.size.height), (0.0, 10.0));
     }
 
     /// The dynamic host reads its layout-facing answers through the live
@@ -900,17 +952,26 @@ mod tests {
         let context = glib::MainContext::default();
         while context.iteration(false) {}
 
-        let child = host.first_child().expect("dynamic content not rendered");
         assert_eq!(
             query_axis(&host),
             Some(StretchAxis::MainAxis),
             "dynamic host did not report the spacer's main-axis stretch"
         );
         assert_eq!(query_priority(&host), Some(i32::MIN));
+
+        // A replacement child that is a layout container inherits the packet
+        // the host retained — a leaf carries no packet of its own.
+        handler.set(waterui_layout::stack::vstack((
+            waterui_layout::spacer::Spacer::new(8.0),
+        )));
+        while context.iteration(false) {}
+
+        let child = host.first_child().expect("stack content not rendered");
+        assert_eq!(query_axis(&host), Some(StretchAxis::Vertical));
         assert_eq!(
             child
                 .downcast_ref::<WuiFixedContainer>()
-                .expect("spacer content is not a layout container")
+                .expect("stack content is not a layout container")
                 .imp()
                 .selected_proposal
                 .get(),
@@ -1199,15 +1260,17 @@ mod tests {
         let host = Native::new(dynamic).render(&env, &mut renderer);
 
         let subview = GtkSubView::new(host, StretchAxis::None);
-        handler.set(waterui_layout::spacer::Spacer::new(8.0));
+        handler.set(waterui_layout::stack::vstack((
+            waterui_layout::spacer::Spacer::new(8.0),
+        )));
         let context = glib::MainContext::default();
         while context.iteration(false) {}
 
         let dimensions = subview.measure(ProposalSize::UNSPECIFIED);
-        assert_eq!(subview.stretch_axis(), StretchAxis::MainAxis);
+        assert_eq!(subview.stretch_axis(), StretchAxis::Vertical);
         assert_eq!(
             (dimensions.size.width, dimensions.size.height),
-            (8.0, 8.0),
+            (0.0, 8.0),
             "the host measured itself instead of the live child"
         );
     }
