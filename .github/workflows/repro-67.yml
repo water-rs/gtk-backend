@@ -6,6 +6,11 @@ name: Repro 67
 # ~30-minute nightly runs for a single attempt per example.
 
 on:
+  # Throwaway diagnostic branch trigger: workflow_dispatch only fires for
+  # workflows on the default branch, so this runs on each push here instead.
+  push:
+    branches:
+      - diagnose/e2e-67-x11-probe
   workflow_dispatch:
     inputs:
       example:
@@ -59,8 +64,8 @@ jobs:
       - name: Hammer the example under Xvfb
         env:
           PATH: ${{ github.workspace }}/cli-bin/bin:$PATH
-          REPRO_EXAMPLE: ${{ inputs.example }}
-          REPRO_LOOPS: ${{ inputs.loops }}
+          REPRO_EXAMPLE: ${{ inputs.example || 'shape' }}
+          REPRO_LOOPS: ${{ inputs.loops || '60' }}
         run: |
           xvfb-run -a -s "-screen 0 1280x1024x24" dbus-run-session -- \
             sh -c 'openbox & sleep 2; exec ./.github/scripts/repro-67.sh'
@@ -69,7 +74,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: repro-67-${{ inputs.example }}
+          name: repro-67-${{ inputs.example || 'shape' }}
           path: |
             repro-logs
             repro-shots
