@@ -1,0 +1,77 @@
+name: Repro 67
+
+# TEMPORARY (#67 diagnostic): drive one example through repeated
+# launch/capture cycles under Xvfb so the intermittent never-presents
+# failure can be caught with full X diagnostics, instead of waiting on
+# ~30-minute nightly runs for a single attempt per example.
+
+on:
+  workflow_dispatch:
+    inputs:
+      example:
+        description: example to hammer
+        required: true
+        default: shape
+      loops:
+        description: launch/capture iterations
+        required: true
+        default: "60"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  WATERUI_DIR: ${{ github.workspace }}/waterui
+  EXAMPLE_LOG_DIR: ${{ github.workspace }}/repro-logs
+  SHOTS_DIR: ${{ github.workspace }}/repro-shots
+
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare a waterui checkout carrying this backend
+        run: ./.github/scripts/setup-e2e.sh
+
+      - name: Install system dependencies
+        run: ./.github/scripts/install-e2e-deps.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install the toolchain waterui pins
+        working-directory: waterui
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-e2e
+          workspaces: waterui -> ../e2e-target
+          cache-directories: ~/.water/build_cache/target
+
+      - name: Install the water CLI
+        run: |
+          git clone --depth 1 --branch dev https://github.com/water-rs/cli.git water-cli
+          cargo install --path water-cli --locked \
+            --target-dir "${{ github.workspace }}/e2e-target" \
+            --root "${{ github.workspace }}/cli-bin"
+
+      - name: Hammer the example under Xvfb
+        env:
+          PATH: ${{ github.workspace }}/cli-bin/bin:$PATH
+          REPRO_EXAMPLE: ${{ inputs.example }}
+          REPRO_LOOPS: ${{ inputs.loops }}
+        run: |
+          xvfb-run -a -s "-screen 0 1280x1024x24" dbus-run-session -- \
+            sh -c 'openbox & sleep 2; exec ./.github/scripts/repro-67.sh'
+
+      - name: Upload repro artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repro-67-${{ inputs.example }}
+          path: |
+            repro-logs
+            repro-shots
+          retention-days: 14
+          if-no-files-found: ignore
