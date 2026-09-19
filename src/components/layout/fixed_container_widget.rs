@@ -932,17 +932,26 @@ mod tests {
         let context = glib::MainContext::default();
         while context.iteration(false) {}
 
-        let child = host.first_child().expect("dynamic content not rendered");
         assert_eq!(
             query_axis(&host),
             Some(StretchAxis::MainAxis),
             "dynamic host did not report the spacer's main-axis stretch"
         );
         assert_eq!(query_priority(&host), Some(i32::MIN));
+
+        // A replacement child that is a layout container inherits the packet
+        // the host retained — a leaf carries no packet of its own.
+        handler.set(waterui_layout::stack::vstack((
+            waterui_layout::spacer::Spacer::new(8.0),
+        )));
+        while context.iteration(false) {}
+
+        let child = host.first_child().expect("stack content not rendered");
+        assert_eq!(query_axis(&host), Some(StretchAxis::Vertical));
         assert_eq!(
             child
                 .downcast_ref::<WuiFixedContainer>()
-                .expect("spacer content is not a layout container")
+                .expect("stack content is not a layout container")
                 .imp()
                 .selected_proposal
                 .get(),
@@ -1231,15 +1240,17 @@ mod tests {
         let host = Native::new(dynamic).render(&env, &mut renderer);
 
         let subview = GtkSubView::new(host, StretchAxis::None);
-        handler.set(waterui_layout::spacer::Spacer::new(8.0));
+        handler.set(waterui_layout::stack::vstack((
+            waterui_layout::spacer::Spacer::new(8.0),
+        )));
         let context = glib::MainContext::default();
         while context.iteration(false) {}
 
         let dimensions = subview.measure(ProposalSize::UNSPECIFIED);
-        assert_eq!(subview.stretch_axis(), StretchAxis::MainAxis);
+        assert_eq!(subview.stretch_axis(), StretchAxis::Vertical);
         assert_eq!(
             (dimensions.size.width, dimensions.size.height),
-            (8.0, 8.0),
+            (0.0, 8.0),
             "the host measured itself instead of the live child"
         );
     }
