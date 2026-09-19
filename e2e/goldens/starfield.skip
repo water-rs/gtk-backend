@@ -1,0 +1,1 @@
+Animated or network-dependent first frame: the nightly runs the content check only, never the pixel diff.
