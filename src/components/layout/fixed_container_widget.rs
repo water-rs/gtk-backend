@@ -494,10 +494,10 @@ impl WuiFixedContainer {
     /// claim unanswered.
     pub(crate) fn stack_main_axis(&self) -> Option<Axis> {
         self.imp().layout.borrow().as_ref().and_then(|layout| {
+            eprintln!("DBG stack_main_axis: layout={layout:?}");
             let layout = layout.as_ref() as &dyn core::any::Any;
             eprintln!(
-                "DBG stack_main_axis: type={} is_vstack={} is_hstack={}",
-                core::any::type_name_of_val(layout),
+                "DBG stack_main_axis: is_vstack={} is_hstack={}",
                 layout.is::<VStackLayout>(),
                 layout.is::<HStackLayout>()
             );
