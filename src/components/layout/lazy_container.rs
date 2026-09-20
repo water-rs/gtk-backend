@@ -18,7 +18,11 @@ use crate::components::fixed_container_widget::WuiFixedContainer;
 use crate::components::layout::keyed_model::{KeyedModel, list_item_id};
 use crate::layout::proposal::{install_axis_provider, set_scroll_axes};
 use crate::renderer::GtkRenderer;
-use crate::util::store_watcher_guard;
+use crate::util::{ScopedCss, store_watcher_guard};
+
+/// The style class [`ScopedCss`] hangs the chrome-suppressing rule on for a
+/// lazy stack's `ListView`.
+const CSS_CLASS_LAZY_STACK: &str = "waterui-lazy-stack";
 
 impl GtkComponent for Native<LazyContainer> {
     fn render(self, env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
@@ -90,6 +94,21 @@ impl GtkComponent for Native<LazyContainer> {
         // honours that frame.
         list_view.set_hexpand(true);
         list_view.set_vexpand(true);
+
+        // A lazy stack is a layout container, not a `List`: the theme's
+        // `listview` chrome — the opaque `base_color` background and any
+        // border or shadow a theme may add — must not paint (it only went
+        // unnoticed while the widget's allocation collapsed to its natural
+        // cross extent). Row-state chrome (`:hover`, `:selected`, the focus
+        // ring) cannot appear: rows are created un-activatable and
+        // un-focusable, and `NoSelection` never sets `:selected`. Only
+        // `boxed-list`-style `List`s carry list chrome.
+        ScopedCss::attach(
+            &list_view,
+            CSS_CLASS_LAZY_STACK,
+            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+        .set_declarations("background: none; border: none; box-shadow: none;");
 
         // A `ListView` fills its cross axis by construction: tiles span
         // `max(natural, allocated)` across it and each row's `BinLayout`
@@ -277,6 +296,8 @@ mod tests {
             vec![(list.clone(), StretchAxis::None)],
         );
         set_scroll_axes(column.upcast_ref(), false, true);
+
+        assert!(list.has_css_class(CSS_CLASS_LAZY_STACK));
 
         column.allocate(296, 480, -1, None);
 
