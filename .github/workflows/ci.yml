@@ -108,6 +108,11 @@ jobs:
   # no run at all because `dev` moved since the last one, fails the check
   # with the run to look at or the dispatch to make. Only `main` is gated;
   # fixes land on `dev` through pull requests this check never sees.
+  # This backend is experimental: its nightly is informational, like a bench
+  # leg, and never gates a release (waterui AGENTS.md, "Experimental backends
+  # never gate a release"). The job keeps its name so the main ruleset's
+  # required context is satisfied, reports the nightly's state as an
+  # annotation, and always succeeds; a red nightly becomes an issue here.
   nightly-healthy:
     name: Nightly healthy
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
@@ -120,18 +125,16 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
-      - name: Require a green nightly at the head commit
+      - name: Report the nightly at the head commit
         run: |
           set -euo pipefail
           run="$(gh api \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?head_sha=${HEAD_SHA}&status=completed&per_page=1" \
             --jq 'if (.workflow_runs | length) == 0 then "" else .workflow_runs[0] | .conclusion + " " + .html_url end')"
           if [ -z "${run}" ]; then
-            echo "::error::no completed nightly run exists at ${HEAD_SHA}; dispatch the Nightly workflow on dev at this commit and re-run this check once it is green"
-            exit 1
+            echo "::warning::no completed nightly run exists at ${HEAD_SHA}; this backend is experimental, so the release proceeds without one"
+          elif [ "${run%% *}" != "success" ]; then
+            echo "::warning::the newest nightly run at ${HEAD_SHA} concluded '${run%% *}' (${run#* }); this backend is experimental, so the release proceeds — file the failure as an issue"
+          else
+            echo "nightly at ${HEAD_SHA} is green: ${run#* }"
           fi
-          if [ "${run%% *}" != "success" ]; then
-            echo "::error::the newest nightly run at ${HEAD_SHA} concluded '${run%% *}' (${run#* }); a release needs a green nightly at the commit being released"
-            exit 1
-          fi
-          echo "nightly at ${HEAD_SHA} is green: ${run#* }"
