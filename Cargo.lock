@@ -6694,7 +6694,7 @@ dependencies = [
  "sha2",
  "tracing",
  "waterui-assets-core",
- "waterui-core 0.5.0",
+ "waterui-core",
  "waterui-media",
  "waterui-url",
  "waterui-video",
@@ -6749,10 +6749,10 @@ dependencies = [
  "tracing",
  "waterui",
  "waterui-controls",
- "waterui-core 0.5.0",
+ "waterui-core",
  "waterui-form",
- "waterui-graphics 0.5.0",
- "waterui-layout 0.5.0",
+ "waterui-graphics",
+ "waterui-layout",
  "waterui-text",
  "web-time",
 ]
@@ -6764,25 +6764,12 @@ source = "git+https://github.com/water-rs/waterui?rev=d6807a87c39b2b3f6e992cd9f2
 dependencies = [
  "executor-core",
  "nami",
- "waterui-core 0.5.0",
+ "waterui-core",
  "waterui-icon",
- "waterui-layout 0.5.0",
+ "waterui-layout",
  "waterui-locale",
- "waterui-macros 0.5.0",
+ "waterui-macros",
  "waterui-text",
-]
-
-[[package]]
-name = "waterui-core"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b61704dc8b6cac23cc82fab6dc4ee9b7db7ab50fc75d5050baf5c81ba170a5d9"
-dependencies = [
- "anyhow",
- "nami",
- "num-traits",
- "waterui-macros 0.3.1",
- "waterui-str",
 ]
 
 [[package]]
@@ -6795,7 +6782,7 @@ dependencies = [
  "num-traits",
  "smallvec",
  "suiteki",
- "waterui-macros 0.5.0",
+ "waterui-macros",
 ]
 
 [[package]]
@@ -6817,50 +6804,15 @@ dependencies = [
  "tracing",
  "waterkit-dialog",
  "waterui-controls",
- "waterui-core 0.5.0",
- "waterui-graphics 0.5.0",
- "waterui-layout 0.5.0",
+ "waterui-core",
+ "waterui-graphics",
+ "waterui-layout",
  "waterui-locale",
- "waterui-macros 0.5.0",
+ "waterui-macros",
  "waterui-shape",
  "waterui-text",
  "waterui-url",
  "zeroize",
-]
-
-[[package]]
-name = "waterui-graphics"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e62334234d7d565af4f5a1294eaaf53390742a9c32c1b56e9c865d3743e54677"
-dependencies = [
- "ash",
- "bytemuck",
- "encase",
- "filtrate",
- "filtrate-core",
- "futures",
- "glifo",
- "image",
- "keyboard-types",
- "kurbo",
- "mp4parse",
- "naga 30.0.1",
- "nami",
- "num-traits",
- "parking_lot",
- "pastey 0.2.3",
- "peniko",
- "png",
- "rayon",
- "shaderloom",
- "tracing",
- "vello",
- "vello_common",
- "vello_hybrid",
- "waterui-core 0.3.2",
- "wgpu",
- "wgpu-hal",
 ]
 
 [[package]]
@@ -6895,7 +6847,7 @@ dependencies = [
  "vello_common",
  "vello_cpu",
  "vello_hybrid",
- "waterui-core 0.5.0",
+ "waterui-core",
  "wgpu",
  "wgpu-hal",
 ]
@@ -6925,11 +6877,11 @@ dependencies = [
  "waterui-assets",
  "waterui-backend-core",
  "waterui-controls",
- "waterui-core 0.5.0",
+ "waterui-core",
  "waterui-form",
- "waterui-graphics 0.5.0",
+ "waterui-graphics",
  "waterui-icon",
- "waterui-layout 0.5.0",
+ "waterui-layout",
  "waterui-locale",
  "waterui-navigation",
  "waterui-shape",
@@ -6944,15 +6896,15 @@ version = "0.5.0"
 source = "git+https://github.com/water-rs/waterui?rev=d6807a87c39b2b3f6e992cd9f205f93a2155ed8b#d6807a87c39b2b3f6e992cd9f205f93a2155ed8b"
 dependencies = [
  "suiteki",
- "waterui-core 0.5.0",
- "waterui-graphics 0.5.0",
+ "waterui-core",
+ "waterui-graphics",
  "waterui-text",
 ]
 
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?rev=a1632420ddecde008bde3fe392eee0d9f660d67a#a1632420ddecde008bde3fe392eee0d9f660d67a"
+source = "git+https://github.com/water-rs/image?rev=6b3077431d2edccfd6c7d0b4fb45d69bd1d5bc56#6b3077431d2edccfd6c7d0b4fb45d69bd1d5bc56"
 dependencies = [
  "half",
  "image",
@@ -6961,9 +6913,9 @@ dependencies = [
  "num-traits",
  "peniko",
  "waterkit-codec",
- "waterui-core 0.3.2",
- "waterui-graphics 0.4.1",
- "waterui-layout 0.3.2",
+ "waterui-core",
+ "waterui-graphics",
+ "waterui-layout",
 ]
 
 [[package]]
@@ -7003,14 +6955,14 @@ dependencies = [
  "waterui-assets",
  "waterui-assets-macros",
  "waterui-controls",
- "waterui-core 0.5.0",
+ "waterui-core",
  "waterui-form",
- "waterui-graphics 0.5.0",
+ "waterui-graphics",
  "waterui-icon",
  "waterui-inspector-protocol",
- "waterui-layout 0.5.0",
+ "waterui-layout",
  "waterui-locale",
- "waterui-macros 0.5.0",
+ "waterui-macros",
  "waterui-media",
  "waterui-navigation",
  "waterui-shape",
@@ -7022,26 +6974,14 @@ dependencies = [
 
 [[package]]
 name = "waterui-layout"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c99f8945cd353a4247103ebf504cfd8f6e0a82fab171cc39441849791db44a7"
-dependencies = [
- "nami",
- "num-traits",
- "waterui-core 0.3.2",
- "waterui-graphics 0.4.1",
-]
-
-[[package]]
-name = "waterui-layout"
 version = "0.5.0"
 source = "git+https://github.com/water-rs/waterui?rev=d6807a87c39b2b3f6e992cd9f205f93a2155ed8b#d6807a87c39b2b3f6e992cd9f205f93a2155ed8b"
 dependencies = [
  "nami",
  "num-traits",
  "smallvec",
- "waterui-core 0.5.0",
- "waterui-graphics 0.5.0",
+ "waterui-core",
+ "waterui-graphics",
 ]
 
 [[package]]
@@ -7068,24 +7008,8 @@ dependencies = [
  "toml",
  "tracing",
  "wasm-bindgen",
- "waterui-core 0.5.0",
+ "waterui-core",
  "web-sys",
-]
-
-[[package]]
-name = "waterui-macros"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51ce28518630f0cd4d275ac40300306a03249bd4e70f428aba089e9c07880bc5"
-dependencies = [
- "icu_locale_core",
- "icu_locid",
- "icu_locid_transform",
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 3.0.5",
- "toml",
 ]
 
 [[package]]
@@ -7116,10 +7040,10 @@ dependencies = [
  "waterkit-dialog",
  "waterkit-fs",
  "waterui-controls",
- "waterui-core 0.5.0",
+ "waterui-core",
  "waterui-image",
- "waterui-layout 0.5.0",
- "waterui-macros 0.5.0",
+ "waterui-layout",
+ "waterui-macros",
  "waterui-text",
  "waterui-url",
  "waterui-video",
@@ -7133,8 +7057,8 @@ source = "git+https://github.com/water-rs/waterui?rev=d6807a87c39b2b3f6e992cd9f2
 dependencies = [
  "nami",
  "waterui-controls",
- "waterui-core 0.5.0",
- "waterui-graphics 0.5.0",
+ "waterui-core",
+ "waterui-graphics",
  "waterui-icon",
  "waterui-text",
  "waterui-url",
@@ -7149,34 +7073,25 @@ dependencies = [
  "nami",
  "num-traits",
  "shaderloom",
- "waterui-core 0.5.0",
- "waterui-graphics 0.5.0",
+ "waterui-core",
+ "waterui-graphics",
  "wgpu",
-]
-
-[[package]]
-name = "waterui-str"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c66e3d6b414cab8b20d4a741c44e0f977b27098304547cbe38b3e0bec1b16e6d"
-dependencies = [
- "nami-core",
 ]
 
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/svg?rev=79493d096341faf630e03350f22db73c07bb3b3a#79493d096341faf630e03350f22db73c07bb3b3a"
+source = "git+https://github.com/water-rs/svg?rev=12553db2de92e66ff919f56c6dd98ba42f757a00#12553db2de92e66ff919f56c6dd98ba42f757a00"
 dependencies = [
  "kurbo",
  "peniko",
  "suiteki",
  "tracing",
  "usvg",
- "waterui-core 0.3.2",
- "waterui-graphics 0.4.1",
- "waterui-layout 0.3.2",
- "waterui-macros 0.3.1",
+ "waterui-core",
+ "waterui-graphics",
+ "waterui-layout",
+ "waterui-macros",
 ]
 
 [[package]]
@@ -7194,11 +7109,11 @@ dependencies = [
  "tracing",
  "two-face",
  "wasm-bindgen-futures",
- "waterui-core 0.5.0",
- "waterui-graphics 0.5.0",
- "waterui-layout 0.5.0",
+ "waterui-core",
+ "waterui-graphics",
+ "waterui-layout",
  "waterui-locale",
- "waterui-macros 0.5.0",
+ "waterui-macros",
  "web-sys",
 ]
 
@@ -7227,7 +7142,7 @@ dependencies = [
  "nami",
  "thiserror 2.0.20",
  "uuid",
- "waterui-core 0.5.0",
+ "waterui-core",
  "waterui-url",
 ]
 
@@ -7250,8 +7165,8 @@ dependencies = [
  "suiteki",
  "thiserror 2.0.20",
  "tracing",
- "waterui-core 0.5.0",
- "waterui-layout 0.5.0",
+ "waterui-core",
+ "waterui-layout",
  "waterui-url",
  "waterui-watcher-set",
 ]
