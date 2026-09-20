@@ -264,7 +264,7 @@ mod tests {
     use waterui_core::Str;
     use waterui_layout::stack::{HorizontalAlignment, VStackLayout};
 
-    use waterui_core::layout::{ProposalSize, SubView};
+    use waterui_core::layout::{ProposalSize, Rect, Size, SubView, SubviewPlacement};
 
     use super::*;
     use crate::components::fixed_container_widget::WuiFixedContainer;
@@ -273,6 +273,41 @@ mod tests {
 
     fn init() {
         gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
+    }
+
+    /// Records what the layout pass sees: each child's `stretch_axis()`
+    /// answer, the probe each `measure` runs under, and the frames `place`
+    /// produces. Delegates to `VStackLayout` verbatim.
+    #[derive(Debug)]
+    struct DiagLayout(VStackLayout);
+
+    impl Layout for DiagLayout {
+        fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
+            for child in children {
+                eprintln!(
+                    "DIAG size_that_fits child axis={:?} measure={:?}",
+                    child.stretch_axis(),
+                    child.measure(proposal).size
+                );
+            }
+            self.0.size_that_fits(proposal, children)
+        }
+
+        fn place(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+            children: &[&dyn SubView],
+        ) -> Vec<SubviewPlacement> {
+            for child in children {
+                eprintln!("DIAG place child axis={:?}", child.stretch_axis());
+            }
+            let placements = self.0.place(bounds, proposal, children);
+            for placement in &placements {
+                eprintln!("DIAG placement frame={:?}", placement.frame);
+            }
+            placements
+        }
     }
 
     /// A `VStack::for_each` drawer in a scroll view: the `ListView` the lazy
@@ -302,10 +337,10 @@ mod tests {
         // query answers. `set_scroll_axes` marks the column as vertical
         // scroll content, the marker a scroll view installs on its child.
         let column = WuiFixedContainer::new(
-            Box::new(VStackLayout {
+            Box::new(DiagLayout(VStackLayout {
                 alignment: HorizontalAlignment::Leading,
                 spacing: Computed::constant(0.0),
-            }),
+            })),
             vec![(list.clone(), StretchAxis::None)],
         );
         set_scroll_axes(column.upcast_ref(), false, true);
