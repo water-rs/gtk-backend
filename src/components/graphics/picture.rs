@@ -325,7 +325,12 @@ mod tests {
         let origin = picture_widget
             .compute_point(&row, &graphene::Point::zero())
             .expect("the picture shares the row's widget tree");
-        assert_eq!(origin.x(), 0.0);
-        assert_eq!(origin.y(), 24.0, "the icon is not centred on the 64-px row");
+        // GTK allocates whole pixels, so the origin is exact once rounded.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "an allocated origin is a whole pixel; rounding first makes the cast exact"
+        )]
+        let origin = (origin.x().round() as i32, origin.y().round() as i32);
+        assert_eq!(origin, (0, 24), "the icon is not centred on the 64-px row");
     }
 }
