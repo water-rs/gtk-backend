@@ -16,9 +16,13 @@ use waterui_layout::stack::{LazyStackAxis, lazy_stack_axis};
 use crate::component::GtkComponent;
 use crate::components::fixed_container_widget::WuiFixedContainer;
 use crate::components::layout::keyed_model::{KeyedModel, list_item_id};
-use crate::layout::proposal::set_scroll_axes;
+use crate::layout::proposal::{install_axis_provider, set_scroll_axes};
 use crate::renderer::GtkRenderer;
-use crate::util::store_watcher_guard;
+use crate::util::{ScopedCss, store_watcher_guard};
+
+/// The style class [`ScopedCss`] hangs the chrome-suppressing rule on for a
+/// lazy stack's `ListView`.
+const CSS_CLASS_LAZY_STACK: &str = "waterui-lazy-stack";
 
 impl GtkComponent for Native<LazyContainer> {
     fn render(self, env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
@@ -37,26 +41,18 @@ impl GtkComponent for Native<LazyContainer> {
             .collect::<Vec<_>>();
         model.reconcile(&initial_ids);
 
-        // The axis, spacing and cross-axis alignment all come from the layout the
-        // container was built with. Deriving the axis from `Layout::stretch_axis`
-        // instead — a different question — is what laid every lazy `HStack` out
-        // vertically once the stacks became content-sized. Layouts that do not
-        // virtualize (the snackbar overlay's `AbsoluteLayout` layer) materialize
-        // into a `WuiFixedContainer` instead.
+        // The axis and spacing come from the layout the container was built
+        // with. Deriving the axis from `Layout::stretch_axis` instead — a
+        // different question — is what laid every lazy `HStack` out vertically
+        // once the stacks became content-sized. Layouts that do not virtualize
+        // (the snackbar overlay's `AbsoluteLayout` layer) materialize into a
+        // `WuiFixedContainer` instead.
         let Some(axis) = lazy_stack_axis(layout.as_ref()) else {
             return render_fixed(layout, &contents, &env);
         };
-        let (orientation, spacing, cross_alignment) = match &axis {
-            LazyStackAxis::Vertical { spacing, alignment } => (
-                Orientation::Vertical,
-                spacing.get(),
-                gtk_align_from_horizontal(*alignment),
-            ),
-            LazyStackAxis::Horizontal { spacing, alignment } => (
-                Orientation::Horizontal,
-                spacing.get(),
-                gtk_align_from_vertical(*alignment),
-            ),
+        let (orientation, spacing) = match &axis {
+            LazyStackAxis::Vertical { spacing, .. } => (Orientation::Vertical, spacing.get()),
+            LazyStackAxis::Horizontal { spacing, .. } => (Orientation::Horizontal, spacing.get()),
         };
         let (scrolls_h, scrolls_v) = match orientation {
             Orientation::Vertical => (false, true),
@@ -87,12 +83,46 @@ impl GtkComponent for Native<LazyContainer> {
         let selection = gtk4::NoSelection::new(Some(model.store()));
         let list_view = gtk4::ListView::new(Some(selection), Some(factory));
         list_view.set_orientation(orientation);
-        match orientation {
-            Orientation::Vertical => list_view.set_halign(cross_alignment),
-            _ => list_view.set_valign(cross_alignment),
-        }
+        // The stack's cross-axis alignment is *not* mapped onto
+        // `halign`/`valign` here: those are GTK-parent hints, and
+        // `gtk_widget_adjust_size_allocation` clamps any non-`Fill`
+        // allocation back to the widget's natural size — which for a lazy
+        // list is the rows' intrinsic extent, shrinking fill-requesting rows
+        // (`max_width(f32::INFINITY)`) inside it. Alignment is the WaterUI
+        // placer's job: `WuiFixedContainer` positions the list at the frame
+        // `Layout::place` produced, and the list must keep `Fill` so GTK
+        // honours that frame.
         list_view.set_hexpand(true);
         list_view.set_vexpand(true);
+
+        // A lazy stack is a layout container, not a `List`: the theme's
+        // `listview` chrome — the opaque `base_color` background and any
+        // border or shadow a theme may add — must not paint (it only went
+        // unnoticed while the widget's allocation collapsed to its natural
+        // cross extent). Row-state chrome (`:hover`, `:selected`, the focus
+        // ring) cannot appear: rows are created un-activatable and
+        // un-focusable, and `NoSelection` never sets `:selected`. Only
+        // `boxed-list`-style `List`s carry list chrome.
+        ScopedCss::attach(
+            &list_view,
+            CSS_CLASS_LAZY_STACK,
+            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+        .set_declarations("background: none; border: none; box-shadow: none;");
+
+        // A `ListView` fills its cross axis by construction: tiles span
+        // `max(natural, allocated)` across it and each row's `BinLayout`
+        // fills its tile, which is also what the `hexpand`/`vexpand` above
+        // already tell GTK parents. `LazyContainer::stretch_axis` reports
+        // `None` because it cannot enumerate lazy children — left unclaimed,
+        // a `.leading()` stack allocates the list only its intrinsic cross
+        // extent and rows that asked to fill (`max_width(f32::INFINITY)`)
+        // shrink inside it.
+        let fill_axis = match orientation {
+            Orientation::Vertical => StretchAxis::Horizontal,
+            _ => StretchAxis::Vertical,
+        };
+        install_axis_provider(list_view.upcast_ref(), move |_| fill_axis);
 
         // Reconcile the GTK model by stable WaterUI child identity.
         let contents_guard = contents.watch(.., {
@@ -220,26 +250,61 @@ fn materialize_children(
         .collect()
 }
 
-/// Maps a `WaterUI` cross-axis alignment onto GTK's, for a vertical stack.
-fn gtk_align_from_horizontal(alignment: waterui_layout::HorizontalAlignment) -> gtk4::Align {
-    use waterui_layout::HorizontalAlignment;
-    if alignment == HorizontalAlignment::Leading {
-        gtk4::Align::Start
-    } else if alignment == HorizontalAlignment::Trailing {
-        gtk4::Align::End
-    } else {
-        gtk4::Align::Center
-    }
-}
+#[cfg(test)]
+mod tests {
+    use nami::Computed;
+    use waterui_core::Str;
+    use waterui_layout::stack::{HorizontalAlignment, VStackLayout};
 
-/// Maps a `WaterUI` cross-axis alignment onto GTK's, for a horizontal stack.
-fn gtk_align_from_vertical(alignment: waterui_layout::VerticalAlignment) -> gtk4::Align {
-    use waterui_layout::VerticalAlignment;
-    if alignment == VerticalAlignment::Top {
-        gtk4::Align::Start
-    } else if alignment == VerticalAlignment::Bottom {
-        gtk4::Align::End
-    } else {
-        gtk4::Align::Center
+    use super::*;
+    use crate::components::fixed_container_widget::WuiFixedContainer;
+
+    fn init() {
+        gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
+    }
+
+    /// A `VStack::for_each` drawer in a scroll view: the `ListView` the lazy
+    /// stack realizes to fills its cross axis by construction (tiles span
+    /// `max(natural, allocated)` and each row's `BinLayout` fills its tile),
+    /// but `LazyContainer` cannot enumerate its children, so it declares
+    /// `StretchAxis::None`. Without the realization's claim a leading column
+    /// allocates the list only its intrinsic width, and rows that asked to
+    /// fill — `max_width(f32::INFINITY)` — shrink inside it.
+    #[test]
+    fn lazy_stack_fills_scroll_hosted_column_cross_axis() {
+        init();
+        let env = Environment::new();
+        let mut renderer = GtkRenderer::new();
+        let list = Native::new(LazyContainer::new(
+            VStackLayout {
+                alignment: HorizontalAlignment::Leading,
+                spacing: Computed::constant(0.0),
+            },
+            vec![Str::from("row")],
+        ))
+        .render(&env, &mut renderer);
+
+        // The parent's `render_any_with_axis` records `LazyContainer`'s
+        // declared axis — `None` — in its child list; the provider is what a
+        // query answers. `set_scroll_axes` marks the column as vertical
+        // scroll content, the marker a scroll view installs on its child.
+        let column = WuiFixedContainer::new(
+            Box::new(VStackLayout {
+                alignment: HorizontalAlignment::Leading,
+                spacing: Computed::constant(0.0),
+            }),
+            vec![(list.clone(), StretchAxis::None)],
+        );
+        set_scroll_axes(column.upcast_ref(), false, true);
+
+        assert!(list.has_css_class(CSS_CLASS_LAZY_STACK));
+
+        column.allocate(296, 480, -1, None);
+
+        assert_eq!(
+            list.width(),
+            296,
+            "the lazy stack was allocated its intrinsic width instead of the viewport's"
+        );
     }
 }
