@@ -16,7 +16,7 @@ use waterui_layout::stack::{LazyStackAxis, lazy_stack_axis};
 use crate::component::GtkComponent;
 use crate::components::fixed_container_widget::WuiFixedContainer;
 use crate::components::layout::keyed_model::{KeyedModel, list_item_id};
-use crate::layout::proposal::set_scroll_axes;
+use crate::layout::proposal::{install_axis_provider, set_scroll_axes};
 use crate::renderer::GtkRenderer;
 use crate::util::store_watcher_guard;
 
@@ -93,6 +93,20 @@ impl GtkComponent for Native<LazyContainer> {
         }
         list_view.set_hexpand(true);
         list_view.set_vexpand(true);
+
+        // A `ListView` fills its cross axis by construction: tiles span
+        // `max(natural, allocated)` across it and each row's `BinLayout`
+        // fills its tile, which is also what the `hexpand`/`vexpand` above
+        // already tell GTK parents. `LazyContainer::stretch_axis` reports
+        // `None` because it cannot enumerate lazy children — left unclaimed,
+        // a `.leading()` stack allocates the list only its intrinsic cross
+        // extent and rows that asked to fill (`max_width(f32::INFINITY)`)
+        // shrink inside it.
+        let fill_axis = match orientation {
+            Orientation::Vertical => StretchAxis::Horizontal,
+            _ => StretchAxis::Vertical,
+        };
+        install_axis_provider(list_view.upcast_ref(), move |_| fill_axis);
 
         // Reconcile the GTK model by stable WaterUI child identity.
         let contents_guard = contents.watch(.., {
@@ -241,5 +255,68 @@ fn gtk_align_from_vertical(alignment: waterui_layout::VerticalAlignment) -> gtk4
         gtk4::Align::End
     } else {
         gtk4::Align::Center
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::Computed;
+    use waterui_core::Str;
+    use waterui_layout::stack::{HorizontalAlignment, VStackLayout};
+
+    use super::*;
+    use crate::components::fixed_container_widget::WuiFixedContainer;
+    use crate::layout::proposal::query_axis;
+
+    fn init() {
+        gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
+    }
+
+    /// A `VStack::for_each` drawer in a scroll view: the `ListView` the lazy
+    /// stack realizes to fills its cross axis by construction (tiles span
+    /// `max(natural, allocated)` and each row's `BinLayout` fills its tile),
+    /// but `LazyContainer` cannot enumerate its children, so it declares
+    /// `StretchAxis::None`. Without the realization's claim a leading column
+    /// allocates the list only its intrinsic width, and rows that asked to
+    /// fill — `max_width(f32::INFINITY)` — shrink inside it.
+    #[test]
+    fn lazy_stack_fills_scroll_hosted_column_cross_axis() {
+        init();
+        let env = Environment::new();
+        let mut renderer = GtkRenderer::new();
+        let list = Native::new(LazyContainer::new(
+            VStackLayout {
+                alignment: HorizontalAlignment::Leading,
+                spacing: Computed::constant(0.0),
+            },
+            vec![Str::from("row")],
+        ))
+        .render(&env, &mut renderer);
+        assert_eq!(
+            query_axis(&list),
+            Some(StretchAxis::Horizontal),
+            "a vertical lazy list did not claim the cross-axis fill its tiles perform"
+        );
+
+        // The parent's `render_any_with_axis` records `LazyContainer`'s
+        // declared axis — `None` — in its child list; the provider is what a
+        // query answers. `set_scroll_axes` marks the column as vertical
+        // scroll content, the marker a scroll view installs on its child.
+        let column = WuiFixedContainer::new(
+            Box::new(VStackLayout {
+                alignment: HorizontalAlignment::Leading,
+                spacing: Computed::constant(0.0),
+            }),
+            vec![(list.clone(), StretchAxis::None)],
+        );
+        set_scroll_axes(column.upcast_ref(), false, true);
+
+        column.allocate(296, 480, -1, None);
+
+        assert_eq!(
+            list.width(),
+            296,
+            "the lazy stack was allocated its intrinsic width instead of the viewport's"
+        );
     }
 }
