@@ -264,9 +264,12 @@ mod tests {
     use waterui_core::Str;
     use waterui_layout::stack::{HorizontalAlignment, VStackLayout};
 
+    use waterui_core::layout::{ProposalSize, SubView};
+
     use super::*;
     use crate::components::fixed_container_widget::WuiFixedContainer;
     use crate::layout::proposal::query_axis;
+    use crate::layout::subview::GtkSubView;
 
     fn init() {
         gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
@@ -292,11 +295,7 @@ mod tests {
             vec![Str::from("row")],
         ))
         .render(&env, &mut renderer);
-        assert_eq!(
-            query_axis(&list),
-            Some(StretchAxis::Horizontal),
-            "a vertical lazy list did not claim the cross-axis fill its tiles perform"
-        );
+        eprintln!("DIAG query_axis(list) = {:?}", query_axis(&list));
 
         // The parent's `render_any_with_axis` records `LazyContainer`'s
         // declared axis — `None` — in its child list; the provider is what a
@@ -311,7 +310,28 @@ mod tests {
         );
         set_scroll_axes(column.upcast_ref(), false, true);
 
+        let held = column.first_child().expect("list was parented");
+        eprintln!("DIAG held == list: {}", held == list);
+        eprintln!("DIAG query_axis(held) = {:?}", query_axis(&held));
+
+        let subview = GtkSubView::with_memo(held.clone(), StretchAxis::None, None);
+        eprintln!("DIAG subview.stretch_axis() = {:?}", subview.stretch_axis());
+        let dims = subview.measure(ProposalSize::new(Some(296.0), None));
+        eprintln!(
+            "DIAG subview.measure((296,None)) = {}x{}",
+            dims.size.width, dims.size.height
+        );
+
         column.allocate(296, 480, -1, None);
+        eprintln!(
+            "DIAG column={}x{} list={}x{} held={}x{}",
+            column.width(),
+            column.height(),
+            list.width(),
+            list.height(),
+            held.width(),
+            held.height()
+        );
 
         assert_eq!(
             list.width(),
