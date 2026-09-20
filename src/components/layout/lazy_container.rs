@@ -37,26 +37,18 @@ impl GtkComponent for Native<LazyContainer> {
             .collect::<Vec<_>>();
         model.reconcile(&initial_ids);
 
-        // The axis, spacing and cross-axis alignment all come from the layout the
-        // container was built with. Deriving the axis from `Layout::stretch_axis`
-        // instead — a different question — is what laid every lazy `HStack` out
-        // vertically once the stacks became content-sized. Layouts that do not
-        // virtualize (the snackbar overlay's `AbsoluteLayout` layer) materialize
-        // into a `WuiFixedContainer` instead.
+        // The axis and spacing come from the layout the container was built
+        // with. Deriving the axis from `Layout::stretch_axis` instead — a
+        // different question — is what laid every lazy `HStack` out vertically
+        // once the stacks became content-sized. Layouts that do not virtualize
+        // (the snackbar overlay's `AbsoluteLayout` layer) materialize into a
+        // `WuiFixedContainer` instead.
         let Some(axis) = lazy_stack_axis(layout.as_ref()) else {
             return render_fixed(layout, &contents, &env);
         };
-        let (orientation, spacing, cross_alignment) = match &axis {
-            LazyStackAxis::Vertical { spacing, alignment } => (
-                Orientation::Vertical,
-                spacing.get(),
-                gtk_align_from_horizontal(*alignment),
-            ),
-            LazyStackAxis::Horizontal { spacing, alignment } => (
-                Orientation::Horizontal,
-                spacing.get(),
-                gtk_align_from_vertical(*alignment),
-            ),
+        let (orientation, spacing) = match &axis {
+            LazyStackAxis::Vertical { spacing, .. } => (Orientation::Vertical, spacing.get()),
+            LazyStackAxis::Horizontal { spacing, .. } => (Orientation::Horizontal, spacing.get()),
         };
         let (scrolls_h, scrolls_v) = match orientation {
             Orientation::Vertical => (false, true),
@@ -87,10 +79,15 @@ impl GtkComponent for Native<LazyContainer> {
         let selection = gtk4::NoSelection::new(Some(model.store()));
         let list_view = gtk4::ListView::new(Some(selection), Some(factory));
         list_view.set_orientation(orientation);
-        match orientation {
-            Orientation::Vertical => list_view.set_halign(cross_alignment),
-            _ => list_view.set_valign(cross_alignment),
-        }
+        // The stack's cross-axis alignment is *not* mapped onto
+        // `halign`/`valign` here: those are GTK-parent hints, and
+        // `gtk_widget_adjust_size_allocation` clamps any non-`Fill`
+        // allocation back to the widget's natural size — which for a lazy
+        // list is the rows' intrinsic extent, shrinking fill-requesting rows
+        // (`max_width(f32::INFINITY)`) inside it. Alignment is the WaterUI
+        // placer's job: `WuiFixedContainer` positions the list at the frame
+        // `Layout::place` produced, and the list must keep `Fill` so GTK
+        // honours that frame.
         list_view.set_hexpand(true);
         list_view.set_vexpand(true);
 
@@ -234,80 +231,17 @@ fn materialize_children(
         .collect()
 }
 
-/// Maps a `WaterUI` cross-axis alignment onto GTK's, for a vertical stack.
-fn gtk_align_from_horizontal(alignment: waterui_layout::HorizontalAlignment) -> gtk4::Align {
-    use waterui_layout::HorizontalAlignment;
-    if alignment == HorizontalAlignment::Leading {
-        gtk4::Align::Start
-    } else if alignment == HorizontalAlignment::Trailing {
-        gtk4::Align::End
-    } else {
-        gtk4::Align::Center
-    }
-}
-
-/// Maps a `WaterUI` cross-axis alignment onto GTK's, for a horizontal stack.
-fn gtk_align_from_vertical(alignment: waterui_layout::VerticalAlignment) -> gtk4::Align {
-    use waterui_layout::VerticalAlignment;
-    if alignment == VerticalAlignment::Top {
-        gtk4::Align::Start
-    } else if alignment == VerticalAlignment::Bottom {
-        gtk4::Align::End
-    } else {
-        gtk4::Align::Center
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use nami::Computed;
     use waterui_core::Str;
     use waterui_layout::stack::{HorizontalAlignment, VStackLayout};
 
-    use waterui_core::layout::{ProposalSize, Rect, Size, SubView, SubviewPlacement};
-
     use super::*;
     use crate::components::fixed_container_widget::WuiFixedContainer;
-    use crate::layout::proposal::query_axis;
-    use crate::layout::subview::GtkSubView;
 
     fn init() {
         gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
-    }
-
-    /// Records what the layout pass sees: each child's `stretch_axis()`
-    /// answer, the probe each `measure` runs under, and the frames `place`
-    /// produces. Delegates to `VStackLayout` verbatim.
-    #[derive(Debug)]
-    struct DiagLayout(VStackLayout);
-
-    impl Layout for DiagLayout {
-        fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-            for child in children {
-                eprintln!(
-                    "DIAG size_that_fits child axis={:?} measure={:?}",
-                    child.stretch_axis(),
-                    child.measure(proposal).size
-                );
-            }
-            self.0.size_that_fits(proposal, children)
-        }
-
-        fn place(
-            &self,
-            bounds: Rect,
-            proposal: ProposalSize,
-            children: &[&dyn SubView],
-        ) -> Vec<SubviewPlacement> {
-            for child in children {
-                eprintln!("DIAG place child axis={:?}", child.stretch_axis());
-            }
-            let placements = self.0.place(bounds, proposal, children);
-            for placement in &placements {
-                eprintln!("DIAG placement frame={:?}", placement.frame);
-            }
-            placements
-        }
     }
 
     /// A `VStack::for_each` drawer in a scroll view: the `ListView` the lazy
@@ -330,43 +264,21 @@ mod tests {
             vec![Str::from("row")],
         ))
         .render(&env, &mut renderer);
-        eprintln!("DIAG query_axis(list) = {:?}", query_axis(&list));
 
         // The parent's `render_any_with_axis` records `LazyContainer`'s
         // declared axis — `None` — in its child list; the provider is what a
         // query answers. `set_scroll_axes` marks the column as vertical
         // scroll content, the marker a scroll view installs on its child.
         let column = WuiFixedContainer::new(
-            Box::new(DiagLayout(VStackLayout {
+            Box::new(VStackLayout {
                 alignment: HorizontalAlignment::Leading,
                 spacing: Computed::constant(0.0),
-            })),
+            }),
             vec![(list.clone(), StretchAxis::None)],
         );
         set_scroll_axes(column.upcast_ref(), false, true);
 
-        let held = column.first_child().expect("list was parented");
-        eprintln!("DIAG held == list: {}", held == list);
-        eprintln!("DIAG query_axis(held) = {:?}", query_axis(&held));
-
-        let subview = GtkSubView::with_memo(held.clone(), StretchAxis::None, None);
-        eprintln!("DIAG subview.stretch_axis() = {:?}", subview.stretch_axis());
-        let dims = subview.measure(ProposalSize::new(Some(296.0), None));
-        eprintln!(
-            "DIAG subview.measure((296,None)) = {}x{}",
-            dims.size.width, dims.size.height
-        );
-
         column.allocate(296, 480, -1, None);
-        eprintln!(
-            "DIAG column={}x{} list={}x{} held={}x{}",
-            column.width(),
-            column.height(),
-            list.width(),
-            list.height(),
-            held.width(),
-            held.height()
-        );
 
         assert_eq!(
             list.width(),
