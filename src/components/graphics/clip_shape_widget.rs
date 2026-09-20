@@ -126,6 +126,9 @@ impl WuiClipShape {
         *widget.imp().commands.borrow_mut() = commands.to_vec();
         child.set_parent(&widget);
         *widget.imp().child.borrow_mut() = Some(child.clone());
+        // `BinLayout` makes the widget exactly its child; every layout
+        // channel reads through to the content it clips.
+        crate::layout::proposal::transparent_to_content(widget.upcast_ref(), child);
         widget
     }
 }

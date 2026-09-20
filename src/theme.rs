@@ -4,18 +4,22 @@ use std::rc::Rc;
 
 use gdk4::RGBA;
 use gtk4::{Settings, Widget, prelude::*};
-use nami::{Binding, SignalExt, binding};
+use nami::{Binding, Computed, SignalExt, binding};
 use waterui::theme::{
     ColorScheme,
     color::{
-        Accent, AccentContainer, AccentForeground, Background, Border, Foreground, MutedForeground,
-        SelectionContainer, SelectionForeground, Surface, SurfaceVariant, Tertiary,
-        TertiaryContainer,
+        Accent, AccentContainer, AccentForeground, Background, Border, Error, ErrorForeground,
+        Foreground, MutedForeground, SelectionContainer, SelectionForeground, Surface,
+        SurfaceVariant, Tertiary, TertiaryContainer,
     },
-    install_color_scheme, install_color_signal, installed_color_scheme, installed_color_signal,
+    install_color_scheme, install_color_signal, install_font_signal, installed_color_scheme,
+    installed_color_signal,
 };
 use waterui_core::Environment;
 use waterui_graphics::color::{ResolvedColor, Srgb};
+use waterui_text::font::{
+    Body, Caption, FontSlot, FontWeight, Footnote, Headline, ResolvedFont, Subheadline, Title,
+};
 
 struct Palette {
     background: Binding<ResolvedColor>,
@@ -31,6 +35,8 @@ struct Palette {
     tertiary_container: Binding<ResolvedColor>,
     selection_container: Binding<ResolvedColor>,
     selection_foreground: Binding<ResolvedColor>,
+    error: Binding<ResolvedColor>,
+    error_foreground: Binding<ResolvedColor>,
 }
 
 /// Installs GTK's named system colors and keeps them synchronized with theme changes.
@@ -50,6 +56,8 @@ pub fn install(env: &mut Environment, widget: &Widget) {
     install_missing::<TertiaryContainer>(env, &palette.tertiary_container);
     install_missing::<SelectionContainer>(env, &palette.selection_container);
     install_missing::<SelectionForeground>(env, &palette.selection_foreground);
+    install_missing::<Error>(env, &palette.error);
+    install_missing::<ErrorForeground>(env, &palette.error_foreground);
 
     if installed_color_scheme(env).is_none() {
         let scheme = binding(system_scheme(&settings));
@@ -61,6 +69,8 @@ pub fn install(env: &mut Environment, widget: &Widget) {
             },
         );
     }
+
+    install_fonts(env, &settings);
 
     let palette_for_appearance = Rc::clone(&palette);
     let widget_for_appearance = widget.clone();
@@ -94,6 +104,18 @@ impl Palette {
             tertiary_container: binding(with_opacity(accent, 0.2)),
             selection_container: binding(accent),
             selection_foreground: binding(lookup(widget, "theme_selected_fg_color")),
+            // GTK's Default theme exports the error emphasis as
+            // `error_color` — `error_bg_color` / `error_fg_color` are
+            // libadwaita names that do not exist without an Adwaita
+            // stylesheet. The Default theme paints destructive content
+            // white on its colored fill (`.destructive-action` gets
+            // `button(normal, $destructive_color, white)`), and exports
+            // that white as `theme_selected_fg_color`, so the pair maps
+            // onto Error / ErrorForeground the way
+            // `theme_selected_bg_color` / `theme_selected_fg_color` map
+            // onto the accent pair.
+            error: binding(lookup(widget, "error_color")),
+            error_foreground: binding(lookup(widget, "theme_selected_fg_color")),
         }
     }
 
@@ -115,6 +137,9 @@ impl Palette {
         self.tertiary_container.set(with_opacity(accent, 0.2));
         self.selection_container.set(accent);
         self.selection_foreground
+            .set(lookup(widget, "theme_selected_fg_color"));
+        self.error.set(lookup(widget, "error_color"));
+        self.error_foreground
             .set(lookup(widget, "theme_selected_fg_color"));
     }
 }
@@ -158,5 +183,115 @@ fn system_scheme(settings: &Settings) -> ColorScheme {
         ColorScheme::Dark
     } else {
         ColorScheme::Light
+    }
+}
+
+struct TypeScale {
+    body: Binding<ResolvedFont>,
+    title: Binding<ResolvedFont>,
+    headline: Binding<ResolvedFont>,
+    subheadline: Binding<ResolvedFont>,
+    caption: Binding<ResolvedFont>,
+    footnote: Binding<ResolvedFont>,
+}
+
+/// Installs the platform type scale for every font slot the app theme leaves
+/// unset, and keeps it tracking `gtk-font-name`.
+///
+/// GTK publishes a single UI font: its declared size and weight are the
+/// platform's body setting, and the other slots keep their proportion to body
+/// from the framework default scale — the same role the Apple backend's
+/// `NSFont.preferredFont(forTextStyle:)` mapping plays. No family is
+/// installed: leaving it unset lets Pango resolve the themed face itself,
+/// including `monospace` for the `Monospaced` design.
+fn install_fonts(env: &mut Environment, settings: &Settings) {
+    let scale = Rc::new(TypeScale::read(settings));
+    install_font_missing::<Body>(env, &scale.body);
+    install_font_missing::<Title>(env, &scale.title);
+    install_font_missing::<Headline>(env, &scale.headline);
+    install_font_missing::<Subheadline>(env, &scale.subheadline);
+    install_font_missing::<Caption>(env, &scale.caption);
+    install_font_missing::<Footnote>(env, &scale.footnote);
+    settings.connect_notify_local(Some("gtk-font-name"), move |settings, _| {
+        scale.update(settings);
+    });
+}
+
+fn install_font_missing<T: FontSlot + 'static>(
+    env: &mut Environment,
+    font: &Binding<ResolvedFont>,
+) {
+    if env.query::<T, Computed<ResolvedFont>>().is_none() {
+        install_font_signal::<T>(env, font.computed());
+    }
+}
+
+impl TypeScale {
+    fn read(settings: &Settings) -> Self {
+        Self {
+            body: binding(slot_font::<Body>(settings)),
+            title: binding(slot_font::<Title>(settings)),
+            headline: binding(slot_font::<Headline>(settings)),
+            subheadline: binding(slot_font::<Subheadline>(settings)),
+            caption: binding(slot_font::<Caption>(settings)),
+            footnote: binding(slot_font::<Footnote>(settings)),
+        }
+    }
+
+    fn update(&self, settings: &Settings) {
+        self.body.set(slot_font::<Body>(settings));
+        self.title.set(slot_font::<Title>(settings));
+        self.headline.set(slot_font::<Headline>(settings));
+        self.subheadline.set(slot_font::<Subheadline>(settings));
+        self.caption.set(slot_font::<Caption>(settings));
+        self.footnote.set(slot_font::<Footnote>(settings));
+    }
+}
+
+/// Resolves one font slot against GTK's UI font.
+///
+/// `gtk-font-name` names the face every native label draws in, so its size is
+/// the platform's body size and its weight the platform's base weight; the
+/// slot keeps its share of the framework's default type scale on top. A
+/// setting that expresses no size or weight leaves the slot's framework
+/// default untouched.
+fn slot_font<T: FontSlot>(settings: &Settings) -> ResolvedFont {
+    let mut font = T::DEFAULT;
+    let Some(name) = settings.gtk_font_name() else {
+        return font;
+    };
+    let description = gtk4::pango::FontDescription::from_string(name.as_str());
+    if description.size() > 0 {
+        let declared = f64::from(description.size()) / f64::from(gtk4::pango::SCALE);
+        // Non-absolute description sizes are already in points; absolute ones
+        // arrive in device pixels, where 96 px make 72 pt.
+        let body = if description.is_size_absolute() {
+            declared * 0.75
+        } else {
+            declared
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            font.size = (body * f64::from(T::DEFAULT.size)
+                / f64::from(<Body as FontSlot>::DEFAULT.size)) as f32;
+        }
+    }
+    font.weight = font_weight(description.weight());
+    font
+}
+
+/// Maps a Pango weight onto `FontWeight`'s nine buckets.
+fn font_weight(weight: gtk4::pango::Weight) -> FontWeight {
+    use gtk4::glib::translate::IntoGlib;
+    match weight.into_glib() {
+        ..=150 => FontWeight::Thin,
+        151..=250 => FontWeight::UltraLight,
+        251..=350 => FontWeight::Light,
+        351..=450 => FontWeight::Normal,
+        451..=550 => FontWeight::Medium,
+        551..=650 => FontWeight::SemiBold,
+        651..=750 => FontWeight::Bold,
+        751..=850 => FontWeight::UltraBold,
+        _ => FontWeight::Black,
     }
 }

@@ -3,7 +3,7 @@
 //! GTK never exposes a rendered widget's GPU texture handle through public
 //! API, so the child is captured through the snapshot pipeline
 //! (`snapshot_child` → `GskRenderNode` → `gsk_renderer_render_texture` →
-//! `gdk_texture_download`), which is one GPU→CPU readback per content change.
+//! `GdkTextureDownloader`), which is one GPU→CPU readback per content change.
 //! The filtered output never touches CPU memory again: it is rendered into a
 //! GL texture owned by a `GdkGLContext` created with
 //! `gdk_surface_create_gl_context` — a context in GTK's render-context share
@@ -31,7 +31,7 @@ use gtk4::{Orientation, Widget};
 use waterui_graphics::gpu_surface::WgslModuleCache;
 use waterui_graphics::{AppliedFilter, EffectContext, EffectFrameClock, EffectInput, EffectOutput};
 
-use super::gl_util::{make_gl_loader, texture_format_desc};
+use super::gl_util::{GlProcResolver, make_gl_resolver, texture_format_desc};
 
 #[cfg(not(target_os = "linux"))]
 compile_error!(
@@ -171,6 +171,13 @@ pin_project_lite::pin_project! {
         context: gdk4::GLContext,
         #[pin]
         future: F,
+        // Keeps the GL runtime libraries behind the entry points the
+        // future's captured wgpu objects call mapped until the future —
+        // and everything it owns — has dropped. A device request or filter
+        // setup polled after `init_wgpu`/`init_filter` returned otherwise
+        // jumps into code `dlclose` already unmapped (the nightly filter
+        // crash). Declared last so it is the last field dropped.
+        _gl_resolver: Rc<GlProcResolver>,
     }
 }
 
@@ -179,12 +186,15 @@ impl<F: Future> Future for WithGlContextCurrent<F> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
         let this = self.project();
-        // `make_current` needs a live surface; an unrealized widget has none,
-        // and the wrapped task observes the bumped generation and bails on
-        // its own.
-        if DrawContextExt::surface(this.context).is_some() {
-            this.context.make_current();
+        // `make_current` needs a live surface. Once unrealize tears the EGL
+        // context down there is no context to run the wrapped task's GL work
+        // on, and polling it anyway — or dropping it, which runs glDelete* —
+        // is UB. Stay parked; the task's state observes the bumped generation
+        // on the next snapshot instead.
+        if DrawContextExt::surface(this.context).is_none() {
+            return Poll::Pending;
         }
+        this.context.make_current();
         this.future.poll(cx)
     }
 }
@@ -353,6 +363,16 @@ mod imp {
         /// Bumped on unrealize; in-flight async work created against a dead
         /// context observes it and discards its result.
         pub generation: u64,
+        /// Count of filtered frames this host has appended to its snapshot;
+        /// the e2e readiness gate sequences per-host presentation events.
+        pub presented_frames: u64,
+        /// Owns the GL runtime libraries behind every entry point the glow
+        /// context and the wgpu objects above call through — including on
+        /// drop, where device teardown runs glDelete*. Declared last so the
+        /// libraries stay mapped until all consumers are gone; it is
+        /// context-independent, so `unrealize` leaves it in place and the
+        /// next `init_wgpu` replaces it.
+        pub gl_resolver: Option<Rc<GlProcResolver>>,
     }
 
     impl Default for FilteredHost {
@@ -377,6 +397,8 @@ mod imp {
                     presented: None,
                     frame_clock: EffectFrameClock::new(),
                     generation: 0,
+                    gl_resolver: None,
+                    presented_frames: 0,
                 })),
             }
         }
@@ -403,7 +425,15 @@ impl FilteredHost {
 /// Builds the filtered-container widget hosting `content`.
 pub fn render_applied_filter(mut filter: AppliedFilter, content: Widget) -> Widget {
     let host = FilteredHost::new();
+    tracing::debug!(
+        "[gtk-filter] create filter host host_id={}",
+        host.as_ptr() as usize
+    );
     content.set_parent(&host);
+    // The host is transparent to layout — its measure and allocation pass the
+    // content through untouched — so every layout channel reads through to
+    // the content it captures.
+    crate::layout::proposal::transparent_to_content(host.upcast_ref(), &content);
     let redraw_handle = filter.redraw_handle();
 
     // `GtkWidgetPaintable` reports damage inside the child subtree
@@ -442,6 +472,14 @@ pub fn render_applied_filter(mut filter: AppliedFilter, content: Widget) -> Widg
     redraw_handle.set_waker(Some(waker));
 
     host.upcast()
+}
+
+/// Downloads `texture` as R8G8B8A8 premultiplied rows, returning the pixel
+/// bytes and their row stride.
+fn download_rgba_premultiplied(texture: &gdk4::Texture) -> (glib::Bytes, usize) {
+    let mut downloader = gdk4::TextureDownloader::new(texture);
+    downloader.set_format(gdk4::MemoryFormat::R8g8b8a8Premultiplied);
+    downloader.download_bytes()
 }
 
 impl imp::FilteredHost {
@@ -489,6 +527,13 @@ impl imp::FilteredHost {
         if let Some(texture) = presented {
             let rect = graphene::Rect::new(0.0, 0.0, obj.width() as f32, obj.height() as f32);
             snapshot.append_texture(&texture, &rect);
+            let mut state = self.state.borrow_mut();
+            state.presented_frames += 1;
+            tracing::debug!(
+                "[gtk-filter] filtered frame presented host_id={} seq={}",
+                obj.as_ptr() as usize,
+                state.presented_frames
+            );
         }
         if needs_redraw {
             obj.queue_draw();
@@ -527,15 +572,21 @@ impl imp::FilteredHost {
             }
         }
 
-        let mut loader = make_gl_loader(gl_context);
+        let resolver = Rc::new(make_gl_resolver(gl_context));
         // SAFETY: `gl_context` is current (callers run right after
-        // `make_current`), and the loader resolves symbols from the platform
-        // GL runtime libraries GDK already loaded.
-        let glow_context = Rc::new(unsafe { glow::Context::from_loader_function(|s| loader(s)) });
+        // `make_current`); the resolver keeps the GL runtime libraries the
+        // resolved entry points live in mapped for the lifetime of every
+        // consumer — it is stored in `FilterState` and moved into the
+        // device-request task below, so no consumer outlives it.
+        let glow_context =
+            Rc::new(unsafe { glow::Context::from_loader_function(|s| resolver.load(s)) });
         // SAFETY: same current-context requirement as above; `new_external`
         // probes the context while it is current.
         let exposed = unsafe {
-            wgpu::hal::gles::Adapter::new_external(|s| loader(s), wgpu::GlBackendOptions::default())
+            wgpu::hal::gles::Adapter::new_external(
+                |s| resolver.load(s),
+                wgpu::GlBackendOptions::default(),
+            )
         }
         .unwrap_or_else(|| panic!("AppliedFilter: wgpu-hal failed to create external adapter"));
 
@@ -563,6 +614,7 @@ impl imp::FilteredHost {
             state.wgpu_instance = Some(instance);
             state.wgpu_adapter = Some(adapter.clone());
             state.glow = Some(glow_context);
+            state.gl_resolver = Some(Rc::clone(&resolver));
             state.setup_phase = SetupPhase::RequestingDevice;
         }
 
@@ -571,6 +623,7 @@ impl imp::FilteredHost {
         let imp_state = Rc::clone(&self.state);
         glib::MainContext::default().spawn_local(WithGlContextCurrent {
             context: gl_context.clone(),
+            _gl_resolver: resolver,
             future: async move {
                 let result = adapter.request_device(&device_descriptor).await;
                 {
@@ -603,20 +656,27 @@ impl imp::FilteredHost {
     /// Runs `AppliedFilter::setup` once the device exists, with the context
     /// made current on every poll.
     fn init_filter(&self, gl_context: &gdk4::GLContext) {
-        let (device, queue, mut filter, shader_cache) = {
+        let (device, queue, mut filter, shader_cache, gl_resolver) = {
             let mut state = self.state.borrow_mut();
             if state.setup_phase != SetupPhase::Idle {
                 return;
             }
-            let (Some(device), Some(queue), Some(filter)) = (
+            let (Some(device), Some(queue), Some(gl_resolver), Some(filter)) = (
                 state.wgpu_device.clone(),
                 state.wgpu_queue.clone(),
+                state.gl_resolver.clone(),
                 state.filter.take(),
             ) else {
                 return;
             };
             state.setup_phase = SetupPhase::RequestingFilter;
-            (device, queue, filter, Arc::clone(&state.shader_cache))
+            (
+                device,
+                queue,
+                filter,
+                Arc::clone(&state.shader_cache),
+                gl_resolver,
+            )
         };
 
         let generation = self.state.borrow().generation;
@@ -624,6 +684,7 @@ impl imp::FilteredHost {
         let imp_state = Rc::clone(&self.state);
         glib::MainContext::default().spawn_local(WithGlContextCurrent {
             context: gl_context.clone(),
+            _gl_resolver: gl_resolver,
             future: async move {
                 let context = EffectContext {
                     device: &device,
@@ -737,14 +798,19 @@ impl imp::FilteredHost {
         // with no public GL handle, so the capture crosses to CPU memory
         // here. This is the one GPU→CPU transfer the whole pipeline pays,
         // and only when the child's contents actually changed.
-        assert!(
-            captured.format() == gdk4::MemoryFormat::R8g8b8a8Premultiplied,
-            "AppliedFilter: gsk_renderer_render_texture produced {:?}, expected R8G8B8A8 premultiplied",
-            captured.format(),
-        );
-        let stride = gpu.size.width.saturating_mul(4);
-        let mut pixels = vec![0_u8; stride as usize * gpu.size.height as usize];
-        captured.download(&mut pixels, stride as usize);
+        // `gdk_texture_download` converts to `GDK_MEMORY_DEFAULT` — B8G8R8A8
+        // premultiplied on little-endian hosts — whatever the texture's own
+        // format is, which reached the `Rgba8Unorm` input with red and blue
+        // swapped. A downloader pinned to RGBA yields the byte order the
+        // input texture declares.
+        let (pixels, stride) = download_rgba_premultiplied(&captured);
+
+        // `snapshot_child` lets a nested filter host bind its own GL context,
+        // and `render_texture`/`download` leave the surface's render context
+        // current. Every wgpu call below must run on this host's context —
+        // same share group, so a wrong context produces silently misplaced
+        // writes and corrupted per-context state rather than a clean error.
+        gpu.gl_context.make_current();
 
         let (input_texture, input_view) = {
             let mut state = self.state.borrow_mut();
@@ -766,7 +832,9 @@ impl imp::FilteredHost {
             &pixels,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(stride),
+                bytes_per_row: Some(
+                    u32::try_from(stride).expect("AppliedFilter: capture stride exceeds u32"),
+                ),
                 rows_per_image: Some(gpu.size.height),
             },
             wgpu::Extent3d {
@@ -788,7 +856,9 @@ impl imp::FilteredHost {
     ) -> bool {
         // The output lives in a GL texture GDK will own, so wgpu renders into
         // a framebuffer wrapped around it rather than a device-created
-        // texture.
+        // texture. Re-assert the owning context first: the capture phase ends
+        // with GDK's render context current.
+        gpu.gl_context.make_current();
         let (output_width, output_height) = {
             let state = self.state.borrow();
             state
@@ -997,12 +1067,12 @@ mod tests {
         }
     }
 
-    #[allow(clippy::cast_sign_loss, reason = "texture dimensions are non-negative")]
-    fn download_rgba(texture: &gdk4::Texture) -> Vec<u8> {
-        let stride = texture.width() as usize * 4;
-        let mut pixels = vec![0_u8; stride * texture.height() as usize];
-        texture.download(&mut pixels, stride);
-        pixels
+    /// The RGBA bytes of the pixel at the centre of a 64×64 texture.
+    fn centre_pixel(texture: &gdk4::Texture) -> [u8; 4] {
+        let (pixels, stride) = download_rgba_premultiplied(texture);
+        pixels[32 * stride + 32 * 4..][..4]
+            .try_into()
+            .expect("four bytes per pixel")
     }
 
     #[allow(
@@ -1020,14 +1090,16 @@ mod tests {
         )
     }
 
-    /// End-to-end: a solid-white `Picture` filtered by `Invert` must present
-    /// an opaque black frame, and swapping the child's contents must produce
-    /// a fresh capture (opaque white).
+    /// End-to-end: a solid-red `Picture` filtered by `Invert` must present an
+    /// opaque cyan frame, and swapping the child's contents for blue must
+    /// produce a fresh capture (opaque yellow). Red and blue are chosen so a
+    /// channel swap anywhere between the GSK capture and the presented
+    /// texture fails the assertion; a grey fixture cannot see one.
     #[test]
     fn applied_filter_inverts_and_recaptures_child_pixels() {
         gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
 
-        let picture = gtk4::Picture::for_paintable(&solid_texture([255, 255, 255, 255], 64));
+        let picture = gtk4::Picture::for_paintable(&solid_texture([255, 0, 0, 255], 64));
         picture.set_content_fit(gtk4::ContentFit::Fill);
         let host = render_applied_filter(
             AppliedFilter::new(filtrate::FilterAdapter::new(filtrate::filters::Invert)),
@@ -1051,16 +1123,15 @@ mod tests {
             .clone()
             .expect("a presented texture exists after the first frame");
         assert_eq!((presented.width(), presented.height()), (64, 64));
-        let pixels = download_rgba(&presented);
         assert_eq!(
-            &pixels[32 * 64 * 4 + 32 * 4..][..4],
-            &[0, 0, 0, 255],
-            "inverting opaque white must produce opaque black"
+            centre_pixel(&presented),
+            [0, 255, 255, 255],
+            "inverting opaque red must produce opaque cyan"
         );
 
         // Changing the child's pixels must trigger a recapture via
         // `WidgetPaintable::invalidate-contents`.
-        picture.set_paintable(Some(&solid_texture([0, 0, 0, 255], 64)));
+        picture.set_paintable(Some(&solid_texture([0, 0, 255, 255], 64)));
         wait_for_frame(&host, Some(&presented));
         let presented = host
             .imp()
@@ -1069,11 +1140,10 @@ mod tests {
             .presented
             .clone()
             .expect("a presented texture exists after recapture");
-        let pixels = download_rgba(&presented);
         assert_eq!(
-            &pixels[32 * 64 * 4 + 32 * 4..][..4],
-            &[255, 255, 255, 255],
-            "inverting opaque black must produce opaque white"
+            centre_pixel(&presented),
+            [255, 255, 0, 255],
+            "inverting opaque blue must produce opaque yellow"
         );
 
         window.close();

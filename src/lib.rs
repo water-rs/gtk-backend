@@ -60,3 +60,11 @@ pub use renderer::GtkRenderer;
 // Re-export types needed by generated GTK entry points
 #[cfg(target_os = "linux")]
 pub use waterui_core::Environment;
+
+#[cfg(all(
+    test,
+    target_os = "linux",
+    feature = "webview-system",
+    gtk_webkitgtk_link_available
+))]
+mod webview_system_tests;

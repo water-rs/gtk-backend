@@ -10,7 +10,7 @@
 
 //! System `WebKitGTK` implementation selected by `webview-system`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -19,7 +19,8 @@ use gtk4::prelude::*;
 use waterui_core::{Computed, Environment, Signal, Str};
 use waterui_webview::{
     BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard,
-    WatcherSet, WebViewController, WebViewError, WebViewEvent, WebViewHandle, bridge,
+    WatcherSet, WebViewConfig, WebViewController, WebViewError, WebViewEvent, WebViewHandle,
+    bridge,
 };
 
 type JsHandler = Rc<waterui_webview::ScriptMessageHandler>;
@@ -118,6 +119,9 @@ mod webkitgtk {
     use gtk4::glib;
     use gtk4::glib::translate::{ToGlibPtr, from_glib_none};
     use waterui_core::Str;
+    use waterui_webview::assets::{
+        ASSET_ORIGIN, ASSET_SCHEME, AssetResponse, AssetServer, asset_target, dispatch,
+    };
 
     use super::ScriptInjectionTime;
 
@@ -128,6 +132,16 @@ mod webkitgtk {
 
     #[repr(C)]
     pub struct WebKitUserContentManager {
+        _private: [u8; 0],
+    }
+
+    #[repr(C)]
+    pub struct WebKitBackForwardList {
+        _private: [u8; 0],
+    }
+
+    #[repr(C)]
+    pub struct WebKitBackForwardListItem {
         _private: [u8; 0],
     }
 
@@ -152,7 +166,12 @@ mod webkitgtk {
     }
 
     #[repr(C)]
-    pub struct WebKitWebsiteDataManager {
+    pub struct WebKitNetworkSession {
+        _private: [u8; 0],
+    }
+
+    #[repr(C)]
+    pub struct WebKitSettings {
         _private: [u8; 0],
     }
 
@@ -181,6 +200,32 @@ mod webkitgtk {
         _private: [u8; 0],
     }
 
+    #[repr(C)]
+    pub struct WebKitWebContext {
+        _private: [u8; 0],
+    }
+
+    #[repr(C)]
+    pub struct WebKitSecurityManager {
+        _private: [u8; 0],
+    }
+
+    #[repr(C)]
+    pub struct WebKitURISchemeRequest {
+        _private: [u8; 0],
+    }
+
+    #[repr(C)]
+    pub struct WebKitURISchemeResponse {
+        _private: [u8; 0],
+    }
+
+    pub type WebKitURISchemeRequestCallback =
+        Option<unsafe extern "C" fn(*mut WebKitURISchemeRequest, *mut c_void)>;
+
+    pub type SoupMessageHeadersType = c_int;
+    pub const SOUP_MESSAGE_HEADERS_RESPONSE: SoupMessageHeadersType = 1;
+
     pub type WebKitPolicyDecisionType = c_int;
     pub const WEBKIT_POLICY_DECISION_TYPE_RESPONSE: WebKitPolicyDecisionType = 2;
 
@@ -201,17 +246,18 @@ mod webkitgtk {
         fn webkit_web_view_reload(web_view: *mut WebKitWebView);
         fn webkit_web_view_can_go_back(web_view: *mut WebKitWebView) -> glib::ffi::gboolean;
         fn webkit_web_view_can_go_forward(web_view: *mut WebKitWebView) -> glib::ffi::gboolean;
+        fn webkit_web_view_get_back_forward_list(
+            web_view: *mut WebKitWebView,
+        ) -> *mut WebKitBackForwardList;
         fn webkit_web_view_get_user_content_manager(
             web_view: *mut WebKitWebView,
         ) -> *mut WebKitUserContentManager;
-        fn webkit_web_view_set_custom_user_agent(
-            web_view: *mut WebKitWebView,
-            user_agent: *const c_char,
-        );
+        fn webkit_web_view_get_settings(web_view: *mut WebKitWebView) -> *mut WebKitSettings;
+        fn webkit_settings_set_user_agent(settings: *mut WebKitSettings, user_agent: *const c_char);
         fn webkit_web_view_get_uri(web_view: *mut WebKitWebView) -> *const c_char;
-        fn webkit_web_view_get_website_data_manager(
+        fn webkit_web_view_get_network_session(
             web_view: *mut WebKitWebView,
-        ) -> *mut WebKitWebsiteDataManager;
+        ) -> *mut WebKitNetworkSession;
         fn webkit_web_view_evaluate_javascript(
             web_view: *mut WebKitWebView,
             script: *const c_char,
@@ -286,8 +332,9 @@ mod webkitgtk {
 
     #[link(name = "webkitgtk-6.0")]
     unsafe extern "C" {
-        fn webkit_website_data_manager_get_cookie_manager(
-            data_manager: *mut WebKitWebsiteDataManager,
+        fn webkit_network_session_new_ephemeral() -> *mut WebKitNetworkSession;
+        fn webkit_network_session_get_cookie_manager(
+            session: *mut WebKitNetworkSession,
         ) -> *mut WebKitCookieManager;
         fn webkit_cookie_manager_add_cookie(
             manager: *mut WebKitCookieManager,
@@ -324,6 +371,52 @@ mod webkitgtk {
         fn jsc_value_to_json(value: *mut JSCValue, indent: c_uint) -> *mut c_char;
     }
 
+    #[link(name = "webkitgtk-6.0")]
+    unsafe extern "C" {
+        fn webkit_web_view_get_type() -> glib::ffi::GType;
+        fn webkit_web_context_new() -> *mut WebKitWebContext;
+        fn webkit_web_context_register_uri_scheme(
+            context: *mut WebKitWebContext,
+            scheme: *const c_char,
+            callback: WebKitURISchemeRequestCallback,
+            user_data: *mut c_void,
+            user_data_destroy_func: glib::ffi::GDestroyNotify,
+        );
+        fn webkit_web_context_get_security_manager(
+            context: *mut WebKitWebContext,
+        ) -> *mut WebKitSecurityManager;
+        fn webkit_security_manager_register_uri_scheme_as_secure(
+            manager: *mut WebKitSecurityManager,
+            scheme: *const c_char,
+        );
+        fn webkit_security_manager_register_uri_scheme_as_cors_enabled(
+            manager: *mut WebKitSecurityManager,
+            scheme: *const c_char,
+        );
+        fn webkit_uri_scheme_request_get_uri(request: *mut WebKitURISchemeRequest)
+        -> *const c_char;
+        fn webkit_uri_scheme_request_get_http_method(
+            request: *mut WebKitURISchemeRequest,
+        ) -> *const c_char;
+        fn webkit_uri_scheme_request_finish_with_response(
+            request: *mut WebKitURISchemeRequest,
+            response: *mut WebKitURISchemeResponse,
+        );
+        fn webkit_uri_scheme_response_new(
+            input_stream: *mut gio::ffi::GInputStream,
+            stream_length: i64,
+        ) -> *mut WebKitURISchemeResponse;
+        fn webkit_uri_scheme_response_set_status(
+            response: *mut WebKitURISchemeResponse,
+            status_code: c_uint,
+            reason_phrase: *const c_char,
+        );
+        fn webkit_uri_scheme_response_set_http_headers(
+            response: *mut WebKitURISchemeResponse,
+            headers: *mut SoupMessageHeaders,
+        );
+    }
+
     #[link(name = "soup-3.0")]
     unsafe extern "C" {
         fn soup_cookie_parse(
@@ -336,6 +429,33 @@ mod webkitgtk {
             hdrs: *mut SoupMessageHeaders,
             name: *const c_char,
         ) -> *const c_char;
+        fn soup_message_headers_new(type_: SoupMessageHeadersType) -> *mut SoupMessageHeaders;
+        fn soup_message_headers_append(
+            hdrs: *mut SoupMessageHeaders,
+            name: *const c_char,
+            value: *const c_char,
+        );
+    }
+
+    #[link(name = "gio-2.0")]
+    unsafe extern "C" {
+        fn g_memory_input_stream_new_from_data(
+            data: *const c_void,
+            len: i64,
+            destroy: glib::ffi::GDestroyNotify,
+        ) -> *mut gio::ffi::GInputStream;
+    }
+
+    // `webkit_web_view_new_with_context` was removed in WebKitGTK 6; the
+    // construct-only `web-context` property through `g_object_new` is the way
+    // to build a view on a chosen context.
+    #[link(name = "gobject-2.0")]
+    unsafe extern "C" {
+        fn g_object_new(
+            object_type: glib::ffi::GType,
+            first_property_name: *const c_char,
+            ...
+        ) -> *mut c_void;
     }
 
     pub(super) struct WebViewParts {
@@ -345,11 +465,16 @@ mod webkitgtk {
         pub cookie_manager: NonNull<WebKitCookieManager>,
     }
 
-    pub(super) fn create_webview() -> WebViewParts {
-        // SAFETY: `webkit_web_view_new` has no preconditions; a null return is
-        // caught by the `NonNull` wrapper.
-        let ptr = NonNull::new(unsafe { webkit_web_view_new() })
-            .expect("webkit_web_view_new returned null (fast-fail)");
+    pub(super) fn create_webview(asset_server: Option<AssetServer>) -> WebViewParts {
+        let ptr = asset_server.map_or_else(
+            || {
+                // SAFETY: `webkit_web_view_new` has no preconditions; a null
+                // return is caught by the `NonNull` wrapper.
+                NonNull::new(unsafe { webkit_web_view_new() })
+                    .expect("webkit_web_view_new returned null (fast-fail)")
+            },
+            create_webview_with_asset_server,
+        );
 
         // SAFETY: `ptr` is the live `WebKitWebView` just created above.
         let manager =
@@ -357,19 +482,18 @@ mod webkitgtk {
                 .expect("webkit_web_view_get_user_content_manager returned null (fast-fail)");
 
         // SAFETY: `ptr` is the live `WebKitWebView` just created above.
-        let data_manager =
-            NonNull::new(unsafe { webkit_web_view_get_website_data_manager(ptr.as_ptr()) })
-                .expect("webkit_web_view_get_website_data_manager returned null (fast-fail)");
-        // SAFETY: `data_manager` is the live website data manager of the view
-        // created above.
-        let cookie_manager = NonNull::new(unsafe {
-            webkit_website_data_manager_get_cookie_manager(data_manager.as_ptr())
-        })
-        .expect("webkit_website_data_manager_get_cookie_manager returned null (fast-fail)");
+        let session = NonNull::new(unsafe { webkit_web_view_get_network_session(ptr.as_ptr()) })
+            .expect("webkit_web_view_get_network_session returned null (fast-fail)");
+        // SAFETY: `session` is the live network session of the view created
+        // above.
+        let cookie_manager =
+            NonNull::new(unsafe { webkit_network_session_get_cookie_manager(session.as_ptr()) })
+                .expect("webkit_network_session_get_cookie_manager returned null (fast-fail)");
 
-        // `webkit_web_view_new` returns a *floating* `GInitiallyUnowned`
-        // reference. `from_glib_none` is the constructor that sinks it — as every
-        // gtk-rs widget constructor does — so the wrapper owns a real reference.
+        // `webkit_web_view_new` and the `g_object_new` path above both return
+        // a *floating* `GInitiallyUnowned` reference. `from_glib_none` is the
+        // constructor that sinks it — as every gtk-rs widget constructor does —
+        // so the wrapper owns a real reference.
         // `from_glib_full` does not sink, so the first `gtk_widget_set_parent`
         // consumed the wrapper's only reference and the final unparent freed the
         // object while `NativeState` still pointed at it.
@@ -383,6 +507,244 @@ mod webkitgtk {
             manager,
             cookie_manager,
         }
+    }
+
+    /// Builds the view on its own `WebKitWebContext` and registers the
+    /// `waterui` asset scheme on it.
+    ///
+    /// URI scheme registration is a `WebKitWebContext` facility — `WebKitGTK`
+    /// has no per-view registration — so a view opened with an asset server
+    /// gets a dedicated context: the scheme exists only where a server can
+    /// answer it, and the context's lifetime owns the server alongside the
+    /// view's.
+    fn create_webview_with_asset_server(server: AssetServer) -> NonNull<WebKitWebView> {
+        // SAFETY: `webkit_web_context_new` has no preconditions; a null return
+        // is caught by the `NonNull` wrapper.
+        let context = NonNull::new(unsafe { webkit_web_context_new() })
+            .expect("webkit_web_context_new returned null (fast-fail)");
+
+        // The scheme and its security flags go in before the context serves a
+        // view — the documented registration order — so no part of the view's
+        // process world can observe the context without them.
+        register_asset_scheme(context, server);
+
+        // A dedicated session keeps the view's network-process world inside
+        // the view's own lifetime: a `WebKitNetworkSession` owns the
+        // `WebsiteDataStore` and `NetworkProcessProxy`, so when the view is
+        // finalized the auxiliary process it spawned is torn down with it.
+        // Without one the view borrows the process-global default session —
+        // a leaked singleton whose network process outlives the view and is
+        // torn down only at process exit, racing whatever teardown is still
+        // in flight. `new_ephemeral` gives the view a private in-memory
+        // `WebsiteDataStore`: `webkit_network_session_new(NULL, NULL)` would
+        // instead persist under the default directories shared with every
+        // default-session view.
+        //
+        // SAFETY: `webkit_network_session_new_ephemeral` has no
+        // preconditions; a null return is caught by the `NonNull` wrapper.
+        let session = NonNull::new(unsafe { webkit_network_session_new_ephemeral() })
+            .expect("webkit_network_session_new_ephemeral returned null (fast-fail)");
+
+        // The view takes its own references to `context` and `session` here.
+        //
+        // SAFETY: `webkit_web_view_get_type` is the WebKitWebView `GType`,
+        // `web-context` and `network-session` are its construct properties
+        // taking `WebKitWebContext*` and `WebKitNetworkSession*`, the property
+        // list is NULL-terminated, and a null return is caught by the
+        // `NonNull` wrapper.
+        let view = NonNull::new(unsafe {
+            g_object_new(
+                webkit_web_view_get_type(),
+                c"web-context".as_ptr(),
+                context.as_ptr(),
+                c"network-session".as_ptr(),
+                session.as_ptr(),
+                std::ptr::null::<c_char>(),
+            )
+        })
+        .expect("g_object_new for WebKitWebView returned null (fast-fail)")
+        .cast::<WebKitWebView>();
+
+        // SAFETY: balances the construction references of `context` and
+        // `session`; the view's own references keep them alive until the view
+        // is finalized, which is when the scheme entry — and the server
+        // inside it — is reclaimed.
+        unsafe {
+            glib::gobject_ffi::g_object_unref(context.as_ptr().cast());
+            glib::gobject_ffi::g_object_unref(session.as_ptr().cast());
+        }
+        view
+    }
+
+    /// Registers the `waterui` URI scheme on `context`, answered by `server`,
+    /// and marks it secure and CORS-enabled so the asset origin is a secure
+    /// context with working storage and `fetch`. The scheme is deliberately
+    /// not marked local: a file-class scheme makes `WebKit` sandbox the
+    /// served documents, which rejects same-origin `fetch` as a failed CORS
+    /// request and blocks `history.pushState` path changes.
+    ///
+    /// The server is boxed into the scheme entry: the context's destroy notify
+    /// reclaims the box when the entry is destroyed — when the context, and
+    /// the view owning it, dies.
+    fn register_asset_scheme(context: NonNull<WebKitWebContext>, server: AssetServer) {
+        let scheme = cstring(ASSET_SCHEME)
+            .expect("the shared asset scheme must not contain NUL (fast-fail)");
+        let server = Box::into_raw(Box::new(server));
+        // SAFETY: `context` is the live `WebKitWebContext` created above;
+        // `scheme` is NUL-terminated for the call; `server` is boxed for the
+        // scheme entry's lifetime and reclaimed by `destroy_asset_server` when
+        // the context drops the entry.
+        unsafe {
+            webkit_web_context_register_uri_scheme(
+                context.as_ptr(),
+                scheme.as_ptr(),
+                Some(on_asset_scheme_request),
+                server.cast(),
+                Some(destroy_asset_server),
+            );
+        }
+
+        // `secure` gives the origin `isSecureContext`; `cors_enabled` keeps
+        // `fetch` honouring CORS. `local` is deliberately absent: it classifies
+        // the scheme like `file://` — per-document sandboxed origins that break
+        // same-origin `fetch` ("Load failed") and `pushState` ("sandboxed
+        // document") — while the asset origin needs ordinary tuple-origin
+        // semantics, which is also what grants same-origin storage.
+        //
+        // SAFETY: `webkit_web_context_get_security_manager` on a live context
+        // returns its live manager — a null return is caught by the assert;
+        // `scheme` stays valid for the calls.
+        unsafe {
+            let manager = webkit_web_context_get_security_manager(context.as_ptr());
+            assert!(
+                !manager.is_null(),
+                "webkit_web_context_get_security_manager returned null (fast-fail)"
+            );
+            webkit_security_manager_register_uri_scheme_as_secure(manager, scheme.as_ptr());
+            webkit_security_manager_register_uri_scheme_as_cors_enabled(manager, scheme.as_ptr());
+        }
+    }
+
+    /// Answers one `waterui` request the context routed here.
+    ///
+    /// `user_data` is the boxed `AssetServer` `register_asset_scheme`
+    /// installed. Method enforcement, host matching and traversal rejection
+    /// all live in the shared [`assets`](waterui_webview::assets) module so
+    /// every engine decides the same way: a URI not naming the asset host
+    /// answers `404`, a method other than GET or HEAD `405`.
+    unsafe extern "C" fn on_asset_scheme_request(
+        request: *mut WebKitURISchemeRequest,
+        user_data: *mut c_void,
+    ) {
+        // SAFETY: `user_data` is the `Box<AssetServer>` the context's scheme
+        // entry owns, live for the whole call.
+        let server = unsafe { &*user_data.cast::<AssetServer>() };
+        // SAFETY: `request` is the live `WebKitURISchemeRequest` the scheme
+        // callback was given; both getters return WebKit-owned NUL-terminated
+        // strings or NULL, which `cstr_to_string` reads as empty — and an
+        // empty URI or method fails the shared checks into a `404`/`405`
+        // rather than reaching the server.
+        let (uri, method) = unsafe {
+            (
+                cstr_to_string(webkit_uri_scheme_request_get_uri(request)),
+                cstr_to_string(webkit_uri_scheme_request_get_http_method(request)),
+            )
+        };
+        let response = match asset_target(&uri, ASSET_ORIGIN) {
+            Some((path, query)) => dispatch(server, &method, path, query),
+            // The scheme is ours but the host is not the asset host.
+            None => AssetResponse::not_found(),
+        };
+        finish_scheme_request(request, &response);
+    }
+
+    /// Completes `request` with `response` — status, headers and body.
+    ///
+    /// The body is copied into a `GMemoryInputStream` `WebKit` reads for the
+    /// response's life, and the headers become a `SoupMessageHeaders` the
+    /// response takes over. The construction references of the stream and the
+    /// `WebKitURISchemeResponse` are balanced here.
+    fn finish_scheme_request(request: *mut WebKitURISchemeRequest, response: &AssetResponse) {
+        let body = &response.body;
+        // `g_malloc(0)` returns NULL; an empty body is a zero-length stream
+        // with no buffer at all.
+        let data = if body.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            // SAFETY: `g_malloc` returns a block of `body.len()` writable
+            // bytes or aborts; `body` is a live readable source of the same
+            // length for the copy.
+            unsafe {
+                let data = glib::ffi::g_malloc(body.len());
+                std::ptr::copy_nonoverlapping(body.as_ptr(), data.cast(), body.len());
+                data
+            }
+        };
+        let stream_length = i64::try_from(body.len())
+            .expect("an asset response body larger than i64::MAX bytes cannot exist");
+        // SAFETY: `data` is NULL with length 0 or a GLib-allocated buffer the
+        // stream owns for its life through `g_free`.
+        let stream = unsafe {
+            g_memory_input_stream_new_from_data(data, stream_length, Some(glib::ffi::g_free))
+        };
+        assert!(
+            !stream.is_null(),
+            "g_memory_input_stream_new_from_data returned null (fast-fail)"
+        );
+        // SAFETY: `stream` is the live `GInputStream` just created; the
+        // response keeps its own reference to it.
+        let scheme_response = unsafe { webkit_uri_scheme_response_new(stream, stream_length) };
+        assert!(
+            !scheme_response.is_null(),
+            "webkit_uri_scheme_response_new returned null (fast-fail)"
+        );
+        // A NULL reason phrase makes WebKit supply the standard one for the
+        // code.
+        // SAFETY: `scheme_response` is the live response created above.
+        unsafe {
+            webkit_uri_scheme_response_set_status(
+                scheme_response,
+                c_uint::from(response.status),
+                std::ptr::null(),
+            );
+        }
+        // SAFETY: `SOUP_MESSAGE_HEADERS_RESPONSE` is the header-set kind a
+        // response carries.
+        let headers = unsafe { soup_message_headers_new(SOUP_MESSAGE_HEADERS_RESPONSE) };
+        assert!(
+            !headers.is_null(),
+            "soup_message_headers_new returned null (fast-fail)"
+        );
+        for (name, value) in &response.headers {
+            let (Some(name), Some(value)) = (cstring(name.as_str()), cstring(value.as_str()))
+            else {
+                // A header with an interior NUL cannot be expressed on the wire.
+                continue;
+            };
+            // SAFETY: `headers` is the live header set; `name` and `value` are
+            // NUL-terminated for the call and soup copies them.
+            unsafe { soup_message_headers_append(headers, name.as_ptr(), value.as_ptr()) };
+        }
+        // SAFETY: `scheme_response` is live; `set_http_headers` takes
+        // ownership of `headers`.
+        unsafe { webkit_uri_scheme_response_set_http_headers(scheme_response, headers) };
+        // SAFETY: `request` is the live request the scheme callback was given
+        // and `scheme_response` is fully populated.
+        unsafe { webkit_uri_scheme_request_finish_with_response(request, scheme_response) };
+        // SAFETY: balances the construction references of the response and
+        // the stream; WebKit and the response keep their own.
+        unsafe {
+            glib::gobject_ffi::g_object_unref(scheme_response.cast());
+            glib::gobject_ffi::g_object_unref(stream.cast());
+        }
+    }
+
+    /// Reclaims the `AssetServer` a scheme entry owned, invoked by the context
+    /// when the entry — and the view behind it — is destroyed.
+    unsafe extern "C" fn destroy_asset_server(data: *mut c_void) {
+        // SAFETY: `data` is the `Box<AssetServer>` `register_asset_scheme`
+        // handed to the context, handed back exactly once here.
+        unsafe { drop(Box::from_raw(data.cast::<AssetServer>())) };
     }
 
     pub(super) fn cstring(value: &str) -> Option<CString> {
@@ -447,10 +809,24 @@ mod webkitgtk {
 
     pub(super) fn set_user_agent(ptr: NonNull<WebKitWebView>, user_agent: &str) {
         if let Some(cstr) = cstring(user_agent) {
-            // SAFETY: `ptr` is a live `WebKitWebView`; `cstr` is a live
-            // NUL-terminated string for the duration of the call.
-            unsafe { webkit_web_view_set_custom_user_agent(ptr.as_ptr(), cstr.as_ptr()) };
+            // SAFETY: `ptr` is a live `WebKitWebView`, so its settings object
+            // is live for the call; `cstr` is a live NUL-terminated string
+            // for the duration of the call.
+            unsafe {
+                webkit_settings_set_user_agent(
+                    webkit_web_view_get_settings(ptr.as_ptr()),
+                    cstr.as_ptr(),
+                );
+            }
         }
+    }
+
+    /// The view's back-forward list — owned by the view, so it lives exactly
+    /// as long as the view and needs no reference juggling.
+    pub(super) fn back_forward_list(ptr: NonNull<WebKitWebView>) -> NonNull<WebKitBackForwardList> {
+        // SAFETY: `ptr` is a live `WebKitWebView`.
+        NonNull::new(unsafe { webkit_web_view_get_back_forward_list(ptr.as_ptr()) })
+            .expect("webkit_web_view_get_back_forward_list returned null (fast-fail)")
     }
 
     pub(super) fn current_uri(ptr: NonNull<WebKitWebView>) -> String {
@@ -460,16 +836,11 @@ mod webkitgtk {
         cstr_to_string(raw)
     }
 
-    /// Injects `source`, restricted to the documents `allow_list` describes.
-    ///
-    /// `None` is `WebKit`'s "every document"; a list restricts injection to the
-    /// URI patterns in it. An *empty* list is never passed: `WebKit` reads it as
-    /// no restriction, so the caller must not inject at all in that case.
+    /// Injects `source` into every document the view loads.
     pub(super) fn add_user_script(
         manager: NonNull<WebKitUserContentManager>,
         source: &str,
         time: ScriptInjectionTime,
-        allow_list: Option<&[Str]>,
     ) {
         let Some(source) = cstring(source) else {
             return;
@@ -478,37 +849,14 @@ mod webkitgtk {
             ScriptInjectionTime::DocumentStart => WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
             ScriptInjectionTime::DocumentEnd => WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END,
         };
-        let patterns: Option<Vec<CString>> = allow_list.map(|patterns| {
-            assert!(
-                !patterns.is_empty(),
-                "an empty WebKit allow list injects everywhere; do not inject instead (fast-fail)"
-            );
-            patterns
-                .iter()
-                .map(|pattern| {
-                    cstring(pattern.as_str()).expect("an origin pattern must not contain NUL")
-                })
-                .collect()
-        });
-        // Kept alive for the whole call: WebKit copies the strings out of it.
-        let allow_pointers: Option<Vec<*const c_char>> = patterns.as_ref().map(|patterns| {
-            patterns
-                .iter()
-                .map(|pattern| pattern.as_ptr())
-                .chain(std::iter::once(std::ptr::null()))
-                .collect()
-        });
-        let allow_list = allow_pointers
-            .as_ref()
-            .map_or(std::ptr::null(), std::vec::Vec::as_ptr);
-        // SAFETY: `source`, `allow_list` and the strings behind it are live
-        // NUL-terminated buffers for the call, and WebKit copies what it keeps.
+        // SAFETY: `source` is a live NUL-terminated string for the call, and
+        // WebKit copies what it keeps.
         let script = unsafe {
             webkit_user_script_new(
                 source.as_ptr(),
                 WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
                 injection_time,
-                allow_list,
+                std::ptr::null(),
                 std::ptr::null(),
             )
         };
@@ -673,33 +1021,6 @@ mod webkitgtk {
             });
         }
         Ok(value)
-    }
-
-    /// The strictest injection pattern `WebKit` can express for `rule`.
-    ///
-    /// [`OriginRule::injection_pattern`] renders the rule exactly, port and all,
-    /// but `WebKit`'s `UserContentURLPattern` rejects a pattern whose host
-    /// contains `:` and an invalid pattern matches nothing — so passing
-    /// `http://localhost:3000/*` through would inject nowhere and leave a dev
-    /// server with no bridge at all. `WebKit`'s filter is host-granular, so a
-    /// ported origin becomes the pattern for its host, and the port is enforced
-    /// exactly where it can be: the origin check on every bridge message.
-    ///
-    /// The URI is taken apart by `GLib` rather than by string surgery here.
-    pub(super) fn injection_pattern(rule: &waterui_webview::OriginRule) -> Str {
-        let waterui_webview::OriginRule::Exact(origin) = rule else {
-            return rule.injection_pattern();
-        };
-        let parsed = glib::Uri::parse(origin, glib::UriFlags::NONE)
-            .unwrap_or_else(|error| panic!("`{origin}` is not a usable origin: {error}"));
-        if parsed.port() < 0 {
-            return rule.injection_pattern();
-        }
-        let scheme = parsed.scheme();
-        let host = parsed
-            .host()
-            .unwrap_or_else(|| panic!("`{origin}` names a port but no host"));
-        Str::from(format!("{scheme}://{host}/*"))
     }
 
     /// The origin `WebKit` itself reports for a document at `uri`, in the
@@ -1024,8 +1345,8 @@ pub fn ensure_webview_controller(env: &mut Environment) {
 pub(crate) struct GtkWebViewController;
 
 impl CustomWebViewController for GtkWebViewController {
-    fn open(&self) -> impl WebViewHandle {
-        GtkWebViewHandle::new()
+    fn open(&self, config: WebViewConfig) -> impl WebViewHandle {
+        GtkWebViewHandle::new(config)
     }
 }
 
@@ -1063,6 +1384,9 @@ impl Drop for NativeState {
 pub(crate) struct GtkWebViewHandle {
     widget: Widget,
     shared: Rc<SharedState>,
+    /// Whether the view was opened with an asset server — what decides the
+    /// origin [`WebViewHandle::asset_origin`] reports.
+    has_asset_server: bool,
     #[cfg(all(
         feature = "webkitgtk",
         gtk_webkitgtk_link_available,
@@ -1079,14 +1403,17 @@ impl core::fmt::Debug for GtkWebViewHandle {
 }
 
 impl GtkWebViewHandle {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(config: WebViewConfig) -> Self {
         #[cfg(not(all(
             feature = "webkitgtk",
             gtk_webkitgtk_link_available,
             unix,
             not(target_os = "macos")
         )))]
-        panic!("{WEBKIT_FEATURE_MSG}");
+        {
+            let _ = config;
+            panic!("{WEBKIT_FEATURE_MSG}");
+        }
 
         #[cfg(all(
             feature = "webkitgtk",
@@ -1095,8 +1422,9 @@ impl GtkWebViewHandle {
             not(target_os = "macos")
         ))]
         {
+            let has_asset_server = config.asset_server.is_some();
             let shared = Rc::new(SharedState::default());
-            let parts = webkitgtk::create_webview();
+            let parts = webkitgtk::create_webview(config.asset_server);
             let native = Rc::new(NativeState {
                 ptr: parts.ptr,
                 manager: parts.manager,
@@ -1108,6 +1436,7 @@ impl GtkWebViewHandle {
             let this = Self {
                 widget: parts.widget,
                 shared,
+                has_asset_server,
                 native,
             };
             this.install_observers();
@@ -1165,14 +1494,6 @@ impl GtkWebViewHandle {
                 .is_some(),
             "GTK WebView missing `estimated-load-progress` property"
         );
-        assert!(
-            self.widget.find_property("can-go-back").is_some(),
-            "GTK WebView missing `can-go-back` property"
-        );
-        assert!(
-            self.widget.find_property("can-go-forward").is_some(),
-            "GTK WebView missing `can-go-forward` property"
-        );
 
         // Every closure below captures `shared` alone. Capturing the handle — which
         // owns `widget` — closed a cycle through the widget the closure is attached
@@ -1202,27 +1523,12 @@ impl GtkWebViewHandle {
                 }
             });
 
-        let shared = self.shared.clone();
-        self.widget
-            .connect_notify_local(Some("can-go-back"), move |obj, _| {
-                let back = obj.property::<bool>("can-go-back");
-                let forward = obj.property::<bool>("can-go-forward");
-                shared.emit(BackendEvent::NavigationState {
-                    can_go_back: back,
-                    can_go_forward: forward,
-                });
-            });
-
-        let shared = self.shared.clone();
-        self.widget
-            .connect_notify_local(Some("can-go-forward"), move |obj, _| {
-                let back = obj.property::<bool>("can-go-back");
-                let forward = obj.property::<bool>("can-go-forward");
-                shared.emit(BackendEvent::NavigationState {
-                    can_go_back: back,
-                    can_go_forward: forward,
-                });
-            });
+        // WebKitGTK 6.0 reports the back/forward lists through methods only —
+        // `can-go-back` and `can-go-forward` are not `GObject` properties — so
+        // `install_signal_handlers` re-emits `NavigationState` from
+        // `load-changed` for document loads and from the back-forward list's
+        // own `changed` signal, which also covers the same-document entries
+        // (`pushState`, in-page anchors) `load-changed` never sees.
     }
 
     #[cfg(all(
@@ -1322,6 +1628,89 @@ impl GtkWebViewHandle {
         unsafe {
             webkitgtk::connect_signal(webview_obj, &tls_signal, tls_callback, tls_data);
         }
+
+        self.install_history_observers(webview_obj);
+    }
+
+    /// Connects `load-changed` and `WebKitBackForwardList::changed` onto one
+    /// deduplicated `NavigationState` emitter.
+    ///
+    /// `load-changed` sees every document load; the list's `changed` signal
+    /// sees every mutation, including the same-document entries `load-changed`
+    /// never reports. Sharing one `Cell` between the connections makes
+    /// whichever fires first report the edge while the other finds the pair
+    /// already current.
+    #[cfg(all(
+        feature = "webkitgtk",
+        gtk_webkitgtk_link_available,
+        unix,
+        not(target_os = "macos")
+    ))]
+    fn install_history_observers(&self, webview_obj: *mut gtk4::glib::gobject_ffi::GObject) {
+        let load_changed_signal =
+            std::ffi::CString::new("load-changed").expect("valid signal name");
+        // SAFETY: `on_load_changed` has the `load-changed` signal's C
+        // prototype — the signal returns void; `GCallback` erases the
+        // signature, so the transmute only renames it.
+        let load_changed_callback = Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(*mut webkitgtk::WebKitWebView, i32, *mut std::ffi::c_void),
+                unsafe extern "C" fn(),
+            >(on_load_changed)
+        });
+        let last_navigation = Rc::new(Cell::new((false, false)));
+        let load_changed_data = NavigationStateData {
+            shared: self.shared.clone(),
+            view: self.widget.downgrade(),
+            last: Rc::clone(&last_navigation),
+        };
+        // SAFETY: `webview_obj` is the live view's `GObject`, the signal name is
+        // a WebKitGTK signal, and the callback's type matches its prototype.
+        unsafe {
+            webkitgtk::connect_signal(
+                webview_obj,
+                &load_changed_signal,
+                load_changed_callback,
+                load_changed_data,
+            );
+        }
+
+        let back_forward_list = webkitgtk::back_forward_list(self.native.ptr);
+        let back_forward_changed_signal =
+            std::ffi::CString::new("changed").expect("valid signal name");
+        // SAFETY: `on_back_forward_list_changed` has the
+        // `WebKitBackForwardList::changed` signal's C prototype — the signal
+        // returns void; `GCallback` erases the signature, so the transmute only
+        // renames it.
+        let back_forward_changed_callback = Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(
+                    *mut webkitgtk::WebKitBackForwardList,
+                    *mut webkitgtk::WebKitBackForwardListItem,
+                    *mut gtk4::glib::ffi::GList,
+                    *mut std::ffi::c_void,
+                ),
+                unsafe extern "C" fn(),
+            >(on_back_forward_list_changed)
+        });
+        let back_forward_changed_data = NavigationStateData {
+            shared: self.shared.clone(),
+            view: self.widget.downgrade(),
+            last: last_navigation,
+        };
+        // SAFETY: `back_forward_list` is the live `GObject` this signal fires
+        // on, the signal name names its `changed` signal, and the callback's
+        // type matches its prototype. The payload holds the view weakly, so
+        // the connection — owned by the list, which the view owns — cannot
+        // keep the view alive.
+        unsafe {
+            webkitgtk::connect_signal(
+                back_forward_list.as_ptr().cast(),
+                &back_forward_changed_signal,
+                back_forward_changed_callback,
+                back_forward_changed_data,
+            );
+        }
     }
 
     #[cfg(all(
@@ -1335,17 +1724,17 @@ impl GtkWebViewHandle {
         self.install_signal_handlers();
     }
 
-    /// Reinstalls every user script, restricted to the documents the bridge
-    /// origin policy admits.
+    /// Reinstalls every user script into every document the view loads.
     ///
     /// `WebKit` has no "replace this script" call, so the whole set is rebuilt;
     /// that is also what makes an [`inject_script`](WebViewHandle::inject_script)
     /// under an existing key replace rather than stack.
     ///
-    /// Nothing is injected while no policy admits anything. The scripts carry the
-    /// bridge and the mirrored-state seed — the seed being the current *values*
-    /// of the exposed state — so injecting them into a document that may not use
-    /// the bridge hands that document state it is not allowed to read.
+    /// Injection is unconditional — `call_async_javascript` needs the shared
+    /// `__wateruiEval` wrapper on every document, bridge or not, and a handle
+    /// opened through the bare controller may never see a policy call. The
+    /// origin policy's only gate is the authentication check on each incoming
+    /// bridge message; the WPE and CEF backends install the same way.
     #[cfg(all(
         feature = "webkitgtk",
         gtk_webkitgtk_link_available,
@@ -1354,22 +1743,6 @@ impl GtkWebViewHandle {
     ))]
     fn rebuild_user_scripts(&self) {
         webkitgtk::remove_all_scripts(self.native.manager);
-        let policy = self.shared.bridge_origins.borrow().clone();
-        let Some(rules) = policy.as_ref().map(waterui_webview::OriginPolicy::rules) else {
-            // No policy installed yet; one always arrives before the first
-            // handler is registered.
-            return;
-        };
-        let allow_list: Option<Vec<Str>> = match rules.as_slice() {
-            // Deny-all: no document may reach the bridge, so nothing is injected.
-            // WebKit reads an *empty* allow list as "no restriction", which is why
-            // this case cannot be expressed as one.
-            [] => return,
-            // WebKit's own spelling of "every document" is a null allow list.
-            [waterui_webview::OriginRule::Any] => None,
-            rules => Some(rules.iter().map(webkitgtk::injection_pattern).collect()),
-        };
-        let allow_list = allow_list.as_deref();
 
         // Transport first: the shared script calls `__wateruiSend`, so the adapter
         // onto WebKitGTK's message handler has to exist before it runs.
@@ -1377,22 +1750,15 @@ impl GtkWebViewHandle {
             self.native.manager,
             TRANSPORT_SCRIPT,
             ScriptInjectionTime::DocumentStart,
-            allow_list,
         );
         webkitgtk::add_user_script(
             self.native.manager,
             waterui_webview::DOCUMENT_START_SCRIPT,
             ScriptInjectionTime::DocumentStart,
-            allow_list,
         );
         let custom = self.native.custom_scripts.borrow().clone();
         for script in custom {
-            webkitgtk::add_user_script(
-                self.native.manager,
-                &script.source,
-                script.time,
-                allow_list,
-            );
+            webkitgtk::add_user_script(self.native.manager, &script.source, script.time);
         }
     }
 
@@ -1670,16 +2036,10 @@ impl WebViewHandle for GtkWebViewHandle {
     }
 
     fn set_bridge_origins(&self, policy: waterui_webview::OriginPolicy) {
+        // Stored for the authentication check on every incoming bridge
+        // message; it does not gate script injection — see
+        // `rebuild_user_scripts`.
         self.shared.bridge_origins.replace(Some(policy));
-        // The policy decides where the bridge and the mirrored-state seed are
-        // injected, so the installed scripts are reinstalled under the new one.
-        #[cfg(all(
-            feature = "webkitgtk",
-            gtk_webkitgtk_link_available,
-            unix,
-            not(target_os = "macos")
-        ))]
-        self.rebuild_user_scripts();
     }
 
     fn remove_handler(&self, name: &str) {
@@ -1812,6 +2172,20 @@ impl WebViewHandle for GtkWebViewHandle {
             not(target_os = "macos")
         )))]
         panic!("{WEBKIT_FEATURE_MSG}");
+    }
+
+    /// The origin this view serves bundled assets under:
+    /// `waterui://localhost` when it was opened with an
+    /// [`AssetServer`](waterui_webview::assets::AssetServer), `None`
+    /// otherwise — the same answer every WebKit-family engine gives.
+    fn asset_origin(&self) -> Option<Url> {
+        self.has_asset_server.then(|| {
+            waterui_webview::assets::ASSET_ORIGIN
+                .parse()
+                .unwrap_or_else(|error| {
+                    panic!("the shared asset origin must always parse: {error}")
+                })
+        })
     }
 
     fn set_cookie(&self, cookie: Cookie<'static>) {
@@ -1997,6 +2371,26 @@ struct LoadFailedData {
 #[derive(Clone)]
 struct TlsFailedData {
     shared: Rc<SharedState>,
+}
+
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+#[derive(Clone)]
+struct NavigationStateData {
+    shared: Rc<SharedState>,
+    /// Weak, because this data lives in closures the web view's own objects —
+    /// the view for `load-changed`, its back-forward list for `changed` — own:
+    /// a strong reference here would keep the view alive forever.
+    view: gtk4::glib::WeakRef<Widget>,
+    /// The last emitted `(can_go_back, can_go_forward)`, shared by the
+    /// `load-changed` and `WebKitBackForwardList::changed` connections so
+    /// whichever fires first reports the change edge and the other sees the
+    /// pair already current — the dedup the notify observers gave for free.
+    last: Rc<Cell<(bool, bool)>>,
 }
 
 #[cfg(all(
@@ -2389,8 +2783,8 @@ unsafe extern "C" fn on_script_message_received(
 ///
 /// `WebKitGTK` reports script messages without the frame that sent them, so this
 /// authenticates the document the view is showing. Subframe content is kept away
-/// from the bridge by injecting the transport into the top frame only, and only
-/// into documents the policy's URI patterns admit.
+/// from the bridge by injecting the transport into the top frame only; the
+/// policy itself is enforced here, at message receipt.
 #[cfg(all(
     feature = "webkitgtk",
     gtk_webkitgtk_link_available,
@@ -2507,4 +2901,64 @@ unsafe extern "C" fn on_load_failed_with_tls_errors(
         message: Str::from(message),
     }));
     1
+}
+
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+unsafe extern "C" fn on_load_changed(
+    _web_view: *mut webkitgtk::WebKitWebView,
+    _load_event: i32,
+    user_data: *mut std::ffi::c_void,
+) {
+    // SAFETY: `user_data` is the `NavigationStateData` box the signal
+    // connection owns for the connection's lifetime.
+    let data = unsafe { &*(user_data.cast::<NavigationStateData>()) };
+    emit_navigation_state(data);
+}
+
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+unsafe extern "C" fn on_back_forward_list_changed(
+    _back_forward_list: *mut webkitgtk::WebKitBackForwardList,
+    _item_added: *mut webkitgtk::WebKitBackForwardListItem,
+    _items_removed: *mut gtk4::glib::ffi::GList,
+    user_data: *mut std::ffi::c_void,
+) {
+    // SAFETY: `user_data` is the `NavigationStateData` box the signal
+    // connection owns for the connection's lifetime.
+    let data = unsafe { &*(user_data.cast::<NavigationStateData>()) };
+    emit_navigation_state(data);
+}
+
+/// Re-reads `can_go_back`/`can_go_forward` and emits `NavigationState` when the
+/// pair moved — the method-only query `WebKitGTK` 6.0 offers, deduplicated to
+/// the change edge the `notify` observers used to report.
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+fn emit_navigation_state(data: &NavigationStateData) {
+    let Some(widget) = data.view.upgrade() else {
+        return;
+    };
+    let view = webview_ptr(&widget);
+    let back = webkitgtk::can_go_back(view);
+    let forward = webkitgtk::can_go_forward(view);
+    if (back, forward) != data.last.get() {
+        data.last.set((back, forward));
+        data.shared.emit(BackendEvent::NavigationState {
+            can_go_back: back,
+            can_go_forward: forward,
+        });
+    }
 }

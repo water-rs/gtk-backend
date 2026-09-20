@@ -1,0 +1,260 @@
+name: Nightly E2E
+
+# The repository's heavyweight coverage contract: drive every WaterUI example
+# through the real backend once a day and compare a settled window capture
+# against a checked-in golden. The suite builds waterui@dev with this commit
+# injected at `backends/gtk`, so it proves the examples a user runs today still
+# work against the backend under test — the same role the apple-backend and
+# android-backend nightlies play, and the coverage the main repository's
+# retired nightly used to fake (water-rs/waterui#755).
+#
+# A red scheduled run opens a tracking issue from .github/E2E_FAILURE.md; the
+# per-example artifacts carry the capture and launcher log. `golden_mode:
+# record` captures fresh baselines and uploads them as `e2e-candidates`
+# artifacts for review into e2e/goldens/.
+#
+# Each run also records per-example release metrics — packaged binary size,
+# settled RSS, and exec-to-first-window latency — into `e2e-metrics` artifacts,
+# a run-summary table, and (scheduled runs) the orphan `metrics` branch whose
+# history/ files outlive artifact retention.
+#
+# Shape (#49): `prepare` clones waterui once, builds the water CLI once and
+# hands it to the example jobs as an artifact, and packages one example so
+# the shared release target directory is warm; it is the single writer of
+# the `nightly-e2e` cache. Each example job then restores that cache and
+# builds only its own increment, instead of compiling the CLI and the whole
+# framework thirty-odd times a night.
+
+on:
+  schedule:
+    # Staggered after waterui's old nightly (03:17 UTC), android-backend
+    # (04:23), and apple-backend (05:23).
+    - cron: "47 6 * * *"
+  workflow_dispatch:
+    inputs:
+      golden_mode:
+        description: >-
+          enforce compares captures against e2e/goldens/; record uploads fresh
+          baselines as artifacts instead
+        type: choice
+        options:
+          - enforce
+          - record
+        default: enforce
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nightly-e2e
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  WATERUI_DIR: ${{ github.workspace }}/waterui
+  EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
+  SHOTS_DIR: ${{ github.workspace }}/e2e-shots
+  RECORD_DIR: ${{ github.workspace }}/e2e-candidates
+  METRICS_DIR: ${{ github.workspace }}/e2e-metrics
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare a waterui checkout carrying this backend
+        run: ./.github/scripts/setup-e2e.sh
+
+      # One job per example: runner capacity is plentiful, and full isolation
+      # means one crashing example can never take siblings down with it.
+      - name: Emit the runnable example matrix
+        id: list
+        run: |
+          comm -23 \
+            <(./.github/scripts/discover-examples.sh | sort) \
+            <(grep -E '^\s*[^#[:space:]]' e2e/skip.txt | awk '{print $1}' | sort) \
+            | tee /dev/stderr \
+            | jq -Rnc '{example: [inputs]}' > /tmp/matrix.json
+          echo "matrix=$(cat /tmp/matrix.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Install system dependencies
+        run: ./.github/scripts/install-e2e-deps.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install the toolchain waterui pins
+        working-directory: waterui
+        run: rustup toolchain install
+
+      # The single writer of the shared cache. A GitHub cache entry only
+      # matches a restore that names the same paths, so this declaration is
+      # identical to the example jobs' and the CLI builds into the same
+      # target directory rather than one of its own.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-e2e
+          workspaces: waterui -> ../e2e-target
+          # `water package` builds into the CLI's shared target (water-rs/cli#65),
+          # which the workspace entry above does not cover.
+          cache-directories: ~/.water/build_cache/target
+
+      # The CLI lives in water-rs/cli since water-rs/waterui#899; install its
+      # dev branch so the e2e exercises the same generation logic the
+      # checkouts are written for.
+      - name: Install the water CLI
+        run: |
+          git clone --depth 1 --branch dev https://github.com/water-rs/cli.git water-cli
+          cargo install --path water-cli --locked \
+            --target-dir "${{ github.workspace }}/e2e-target" \
+            --root "${{ github.workspace }}/cli-bin"
+
+      - name: Upload the water CLI
+        uses: actions/upload-artifact@v4
+        with:
+          name: water-cli
+          path: cli-bin/bin/water
+          retention-days: 1
+          if-no-files-found: error
+
+      # Package one example so the cache carries the framework, the backend
+      # and their dependency graph in release profile; each example job then
+      # compiles only its own crate. The gallery reaches the most of the
+      # framework, so it is the one to warm with.
+      - name: Warm the shared release target
+        working-directory: waterui/examples/gallery
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/e2e-target
+        run: |
+          export PATH="${{ github.workspace }}/cli-bin/bin:$PATH"
+          water package --platform linux --backend gtk4 --release --yes
+
+  e2e:
+    name: example-${{ matrix.example }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      # One red example must not hide another's result.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare a waterui checkout carrying this backend
+        run: ./.github/scripts/setup-e2e.sh
+
+      - name: Install system dependencies
+        run: ./.github/scripts/install-e2e-deps.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install the toolchain waterui pins
+        working-directory: waterui
+        run: rustup toolchain install
+
+      # Restore-only: `prepare` wrote this key after warming the release
+      # target, and thirty jobs saving it would race for the reservation.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-e2e
+          save-if: false
+          workspaces: waterui -> ../e2e-target
+          # `water package` builds into the CLI's shared target (water-rs/cli#65),
+          # which the workspace entry above does not cover.
+          cache-directories: ~/.water/build_cache/target
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: water-cli
+          path: cli-bin/bin
+      - run: chmod +x cli-bin/bin/water
+
+      - name: Run the example under Xvfb
+        env:
+          EXAMPLE: ${{ matrix.example }}
+          RECORD: ${{ inputs.golden_mode == 'record' && 1 || 0 }}
+        run: |
+          export PATH="${{ github.workspace }}/cli-bin/bin:$PATH"
+          xvfb-run -a -s "-screen 0 1280x1024x24" dbus-run-session -- \
+            sh -c 'openbox & sleep 2; exec ./.github/scripts/run-e2e-example.sh'
+
+      - name: Upload captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-shots-${{ matrix.example }}
+          path: e2e-shots/
+          retention-days: 14
+
+      # Always: the launcher log carries the app's stderr (tracing, panics),
+      # and a record-mode WARN exits zero while still being the interesting
+      # run to diagnose.
+      - name: Upload launcher logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ matrix.example }}
+          path: e2e-logs/
+          retention-days: 14
+
+      - name: Upload recorded baselines
+        if: inputs.golden_mode == 'record'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-candidates-${{ matrix.example }}
+          path: e2e-candidates/
+          retention-days: 14
+
+      - name: Upload metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-metrics-${{ matrix.example }}
+          path: e2e-metrics/
+          retention-days: 90
+
+  metrics:
+    name: Record metrics
+    needs: e2e
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      # Scheduled runs append JSONL history to the orphan `metrics` branch.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: e2e-metrics-*
+          path: metrics-in
+          merge-multiple: true
+      - name: Summarize into the run page
+        run: |
+          echo "## e2e metrics" >> "$GITHUB_STEP_SUMMARY"
+          ./.github/scripts/report-metrics.sh metrics-in >> "$GITHUB_STEP_SUMMARY"
+      - name: Append history to the metrics branch
+        if: github.event_name == 'schedule'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./.github/scripts/append-metrics-history.sh metrics-in
+
+  report:
+    name: Report failure
+    needs: e2e
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: JasonEtco/create-an-issue@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          filename: .github/E2E_FAILURE.md
+          update_existing: true

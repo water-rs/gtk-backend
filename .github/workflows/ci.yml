@@ -15,6 +15,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # CI builds are one-shot: the incremental database is dead weight in every
+  # cache entry, and dev/test debuginfo is the largest single contributor to
+  # target-dir size on a sys-crate-heavy dependency tree.
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
   # llvmpipe (software rasterizer) gives the GL context GPU-path code needs
   # without a display server GPU.
   LIBGL_ALWAYS_SOFTWARE: "1"
@@ -31,15 +37,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev \
-            libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
-            libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev \
-            libxkbcommon-dev mesa-vulkan-drivers libvulkan1 \
-            libwebkitgtk-6.0-dev xvfb libgl1-mesa-dri openbox dbus-x11
+      - uses: ./.github/actions/setup-linux-deps
+        with:
+          extra-packages: xvfb libgl1-mesa-dri openbox dbus-x11
+      # The two matrix legs compile different feature sets into disjoint
+      # artifacts; without a per-leg key they race to save under one key and
+      # whichever lands second wins, leaving the other leg permanently cold.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-${{ matrix.features }}
       - uses: taiki-e/install-action@nextest
       # Focus tests need the toplevel to actually hold input focus, which no
       # window gets under bare Xvfb: a minimal WM (openbox) grants it. The
@@ -59,14 +65,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev \
-            libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
-            libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev \
-            libxkbcommon-dev mesa-vulkan-drivers libvulkan1 \
-            libwebkitgtk-6.0-dev
+      - uses: ./.github/actions/setup-linux-deps
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
@@ -80,14 +79,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev \
-            libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
-            libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev \
-            libxkbcommon-dev mesa-vulkan-drivers libvulkan1 \
-            libwebkitgtk-6.0-dev
+      - uses: ./.github/actions/setup-linux-deps
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features
 
@@ -104,4 +96,45 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.os }}
       - run: cargo check --all-targets --all-features
+
+  # A release is a merge into `main`, and `main` only accepts `dev`. The
+  # nightly is the only run of the example e2e suite, so a `dev` it has not
+  # passed must not be released: this check requires the newest completed
+  # nightly run at the pull request's head commit — scheduled or dispatched,
+  # the inputs are the same — to have succeeded. A red or cancelled run, or
+  # no run at all because `dev` moved since the last one, fails the check
+  # with the run to look at or the dispatch to make. Only `main` is gated;
+  # fixes land on `dev` through pull requests this check never sees.
+  # This backend is experimental: its nightly is informational, like a bench
+  # leg, and never gates a release (waterui AGENTS.md, "Experimental backends
+  # never gate a release"). The job keeps its name so the main ruleset's
+  # required context is satisfied, reports the nightly's state as an
+  # annotation, and always succeeds; a red nightly becomes an issue here.
+  nightly-healthy:
+    name: Nightly healthy
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Report the nightly at the head commit
+        run: |
+          set -euo pipefail
+          run="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?head_sha=${HEAD_SHA}&status=completed&per_page=1" \
+            --jq 'if (.workflow_runs | length) == 0 then "" else .workflow_runs[0] | .conclusion + " " + .html_url end')"
+          if [ -z "${run}" ]; then
+            echo "::warning::no completed nightly run exists at ${HEAD_SHA}; this backend is experimental, so the release proceeds without one"
+          elif [ "${run%% *}" != "success" ]; then
+            echo "::warning::the newest nightly run at ${HEAD_SHA} concluded '${run%% *}' (${run#* }); this backend is experimental, so the release proceeds — file the failure as an issue"
+          else
+            echo "nightly at ${HEAD_SHA} is green: ${run#* }"
+          fi

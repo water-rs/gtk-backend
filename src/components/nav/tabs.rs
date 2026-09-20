@@ -8,6 +8,7 @@ use waterui_core::{Environment, Native};
 use waterui_navigation::tab::{NativeTabStyle, TabsLayout};
 
 use crate::component::GtkComponent;
+use crate::components::nav::enforce_single_line_labels;
 use crate::renderer::GtkRenderer;
 use crate::util::store_watcher_guard;
 
@@ -29,6 +30,9 @@ impl GtkComponent for Native<TabsLayout> {
             NativeTabStyle::Sidebar => gtk4::PositionType::Left,
         };
         notebook.set_tab_pos(position);
+        // A tab bar narrower than its labels scrolls rather than
+        // clamping the window's minimum width to the tab strip.
+        notebook.set_scrollable(true);
 
         // Track tab IDs for selection binding
         let mut tab_ids = Vec::new();
@@ -38,8 +42,14 @@ impl GtkComponent for Native<TabsLayout> {
             let id = tab.id;
             tab_ids.push(id);
 
-            // Render the label
+            // Render the label. `GtkNotebook` sizes each tab to its
+            // *minimum* requisition, so the label's minimum must be its
+            // full text: a wrapping label hyphenates character by
+            // character, and an ellipsizing one collapses to a single
+            // ellipsis. Single-line, non-ellipsizing reports the title's
+            // natural width.
             let label_widget = renderer.render_any(tab.label, env);
+            enforce_single_line_labels(&label_widget, gtk4::pango::EllipsizeMode::None);
 
             // Build and render the content (NavigationView)
             let navigation_view = tab.content.build();

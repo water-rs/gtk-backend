@@ -29,8 +29,13 @@ impl LocalExecutor for GtkMainThreadExecutor {
     where
         Fut: Future + 'static,
     {
+        // Wakers fire on whatever thread completed the awaited work — GPU init
+        // lands on `async-io` driver threads — so the hop back to the main
+        // context must be the thread-safe `idle_add_once`; the `*_local`
+        // variant asserts the caller already owns the context and panics
+        // on foreign threads.
         let (runnable, task) = async_task::spawn_local(fut, |runnable: Runnable| {
-            glib::idle_add_local_once(move || {
+            glib::idle_add_once(move || {
                 runnable.run();
             });
         });
@@ -46,6 +51,15 @@ impl LocalExecutor for GtkMainThreadExecutor {
 /// advertisement that lets `water inspect` find this application.
 #[must_use]
 pub fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> {
+    // The backend instruments its rendering paths with `tracing`, but a
+    // generated application has no subscriber unless one is installed here.
+    // `try_init` leaves an application-installed subscriber alone, and the
+    // env filter keeps the log quiet unless `RUST_LOG` opts into more.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .try_init();
+
     // GTK apps run UI rendering on the main thread. Initialize executors there so
     // spawn/spawn_local paths used by reactive bindings are always available.
     let _ = try_init_global_executor(NativeExecutor::new());
@@ -136,6 +150,10 @@ impl GtkApp {
             let view = view.clone();
             let mut env = env.clone();
             waterui::inspector::install(&mut env, inspector);
+            // `activate` returning with a zero use count shuts the run loop
+            // down before the deferred window work runs; hold the application
+            // until the window itself holds it via `add_window`.
+            let hold = app.hold();
             spawn_local(async move {
                 let runtime = waterui_graphics::GpuRuntime::new()
                     .await
@@ -148,6 +166,7 @@ impl GtkApp {
                 let widget = renderer.render(view, &env);
                 window.set_child(Some(&widget));
                 window.present();
+                drop(hold);
             })
             .detach();
         });
@@ -189,6 +208,9 @@ impl GtkApp {
             let background = background.clone();
             let mut env = env.clone();
             waterui::inspector::install(&mut env, inspector);
+            // See the `hold` rationale in `run`: the window takes over the
+            // application reference once it is presented.
+            let hold = app.hold();
             spawn_local(async move {
                 let runtime = waterui_graphics::GpuRuntime::new()
                     .await
@@ -216,6 +238,7 @@ impl GtkApp {
                 let widget = renderer.render_any(content, &env);
                 window.set_child(Some(&widget));
                 window.present();
+                drop(hold);
             })
             .detach();
         });
