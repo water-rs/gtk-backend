@@ -29,13 +29,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       # `cargo publish` verify-compiles the crate, and the crate links GTK4.
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev \
-            libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
-            libgtk-4-dev libpipewire-0.3-dev libudev-dev libegl-dev libwayland-dev \
-            libxkbcommon-dev libwebkitgtk-6.0-dev
+      - uses: ./.github/actions/setup-linux-deps
       # Mint a short-lived crates.io token from the GitHub OIDC identity
       # instead of a stored CARGO_REGISTRY_TOKEN (trusted publishing is
       # configured for the crate on crates.io).
@@ -61,6 +55,11 @@ jobs:
           ref: dev
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
+      # `release-pr` runs cargo-semver-checks, which builds the crate against
+      # the published baseline, so this job needs the same native libraries
+      # every other Linux job does. Without them the build fails in
+      # `khronos-egl`'s build script and no release PR is ever opened.
+      - uses: ./.github/actions/setup-linux-deps
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release-pr
