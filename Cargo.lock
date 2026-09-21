@@ -6865,7 +6865,7 @@ dependencies = [
 
 [[package]]
 name = "waterui-gtk"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "executor-core",
  "filtrate",
