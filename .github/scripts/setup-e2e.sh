@@ -31,11 +31,26 @@ path = sys.argv[1]
 with open(path) as f:
     lines = f.readlines()
 for i, line in enumerate(lines):
-    if re.match(r'^waterui-gtk\s*=', line):
-        version = re.search(r'version\s*=\s*"([^"]+)"', line)
-        suffix = f', version = "{version.group(1)}"' if version else ""
-        lines[i] = f'waterui-gtk = {{ path = "backends/gtk"{suffix} }}\n'
-        break
+    if not re.match(r'^waterui-gtk\s*=', line):
+        continue
+    # `waterui-gtk` is one of the framework's scaffold packages, so the
+    # manifest the CLI derives from this checkout has to carry its version
+    # requirement. The declaration states it either as a bare string
+    # (`waterui-gtk = "0.2.0"`, the registry form the 0.5.0 wave moved to) or
+    # inside an inline table (`{ git, rev, version }`).
+    bare = re.match(r'^waterui-gtk\s*=\s*"([^"]+)"\s*$', line)
+    table = re.search(r'version\s*=\s*"([^"]+)"', line)
+    if bare:
+        version = bare.group(1)
+    elif table:
+        version = table.group(1)
+    else:
+        sys.exit(
+            "the waterui-gtk declaration carries no version requirement, which "
+            "the CLI needs to derive the framework manifest's scaffold table"
+        )
+    lines[i] = f'waterui-gtk = {{ path = "backends/gtk", version = "{version}" }}\n'
+    break
 else:
     sys.exit("no waterui-gtk dependency declaration found in the workspace manifest")
 with open(path, "w") as f:
