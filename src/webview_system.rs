@@ -1341,8 +1341,10 @@ pub fn ensure_webview_controller(env: &mut Environment) {
     env.insert(WebViewController::new(GtkWebViewController));
 }
 
+/// The `WebKitGTK`-backed web view controller this backend installs into the
+/// environment; bridges [`CustomWebViewController`] onto the platform engine.
 #[derive(Debug, Default, Clone)]
-pub(crate) struct GtkWebViewController;
+pub struct GtkWebViewController;
 
 impl CustomWebViewController for GtkWebViewController {
     fn open(&self, config: WebViewConfig) -> impl WebViewHandle {

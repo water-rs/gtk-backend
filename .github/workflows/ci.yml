@@ -56,6 +56,15 @@ jobs:
       - name: cargo nextest run --all-features
         if: matrix.features == 'all-features'
         run: xvfb-run -a dbus-run-session -- sh -c 'openbox & sleep 2; cargo nextest run --all-features'
+      # The WebKitGTK system tests are a `harness = false` binary — GTK and
+      # WebKitGTK must own the process main thread, which libtest cannot
+      # provide, so nextest cannot enumerate its cases. Run it through
+      # `cargo test` under the same xvfb/dbus/WM wrapper; `timeout` is the
+      # process watchdog nextest's `webview` test-group provided, since a
+      # synchronous native stall outlives the inner async bound.
+      - name: cargo test --test webview_system --all-features
+        if: matrix.features == 'all-features'
+        run: xvfb-run -a dbus-run-session -- sh -c 'openbox & sleep 2; timeout 120 cargo test -p waterui-gtk --test webview_system --all-features'
 
   lint:
     name: Lint
