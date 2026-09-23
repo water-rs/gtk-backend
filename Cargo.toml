@@ -41,7 +41,6 @@ indexmap = "2"
 num-traits = { version = "0.2", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "std"] }
-pin-project-lite = "0.2"
 executor-core = { version = "0.7.1", features = ["std"] }
 native-executor = "0.8.0"
 
@@ -57,10 +56,6 @@ keycode = "1.0"
 
 # GPU surface dependencies (wgpu is required for graphics views & filters).
 wgpu = "29.0.4"
-# Must match the `glow` version wgpu-hal links against, or GLES handles from
-# `wgpu::hal::gles` fail to unify with locally created ones.
-glow = "0.17"
-libloading = "0.9"
 
 # Pin the standalone development graph at its root so consumers can select
 # one coherent framework source through their own root patch table.

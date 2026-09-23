@@ -1,4 +1,5 @@
-//! `GtkGLArea` input, translated into the backend-neutral surface vocabulary.
+//! GPU-surface widget input, translated into the backend-neutral surface
+//! vocabulary.
 //!
 //! A GPU view that draws its own interactive content — an embedded browser
 //! page, a terminal, an editor — reports
@@ -8,7 +9,7 @@
 //! modifier word, and adding another such view adds no translation code at all.
 //!
 //! GTK reaches those views this way rather than through the renderer because
-//! its input arrives at the `GtkGLArea`'s own event controllers, not through a
+//! its input arrives at the widget's own event controllers, not through a
 //! renderer that hit-tests surface layers.
 
 use std::cell::Cell;
@@ -35,15 +36,15 @@ pub trait SurfaceInputSink: 'static {
 /// wherever motion last saw the pointer.
 type PointerPosition = Rc<Cell<Point>>;
 
-/// Forwards every GTK input event on `area` into `input`.
-pub fn install(area: &gtk4::GLArea, input: Rc<dyn SurfaceInputSink>) {
+/// Forwards every GTK input event on `widget` into `input`.
+pub fn install(widget: &gtk4::Widget, input: Rc<dyn SurfaceInputSink>) {
     let position: PointerPosition = Rc::new(Cell::new(Point::ZERO));
 
-    install_motion(area, &input, &position);
-    install_click(area, &input);
-    install_scroll(area, &input, &position);
-    install_focus(area, &input);
-    install_key(area, input);
+    install_motion(widget, &input, &position);
+    install_click(widget, &input);
+    install_scroll(widget, &input, &position);
+    install_focus(widget, &input);
+    install_key(widget, input);
 }
 
 /// GTK reports the modifier chord on every event; the surface vocabulary
@@ -53,7 +54,7 @@ fn send_modifiers(input: &Rc<dyn SurfaceInputSink>, modifiers: ModifierType) {
 }
 
 fn install_motion(
-    area: &gtk4::GLArea,
+    widget: &gtk4::Widget,
     input: &Rc<dyn SurfaceInputSink>,
     position: &PointerPosition,
 ) {
@@ -69,17 +70,17 @@ fn install_motion(
             });
         }
     });
-    area.add_controller(motion);
+    widget.add_controller(motion);
 }
 
-fn install_click(area: &gtk4::GLArea, input: &Rc<dyn SurfaceInputSink>) {
+fn install_click(widget: &gtk4::Widget, input: &Rc<dyn SurfaceInputSink>) {
     let click = gtk4::GestureClick::new();
     click.set_button(0);
     click.connect_pressed({
-        let area = area.clone();
+        let widget = widget.clone();
         let input = Rc::clone(input);
         move |gesture, _, x, y| {
-            area.grab_focus();
+            widget.grab_focus();
             input.handle(&SurfaceInputEvent::Focus(true));
             send_modifiers(&input, gesture.current_event_state());
             input.handle(&SurfaceInputEvent::PointerButton {
@@ -100,11 +101,11 @@ fn install_click(area: &gtk4::GLArea, input: &Rc<dyn SurfaceInputSink>) {
             });
         }
     });
-    area.add_controller(click);
+    widget.add_controller(click);
 }
 
 fn install_scroll(
-    area: &gtk4::GLArea,
+    widget: &gtk4::Widget,
     input: &Rc<dyn SurfaceInputSink>,
     position: &PointerPosition,
 ) {
@@ -142,10 +143,10 @@ fn install_scroll(
             });
         }
     });
-    area.add_controller(scroll);
+    widget.add_controller(scroll);
 }
 
-fn install_focus(area: &gtk4::GLArea, input: &Rc<dyn SurfaceInputSink>) {
+fn install_focus(widget: &gtk4::Widget, input: &Rc<dyn SurfaceInputSink>) {
     let focus = gtk4::EventControllerFocus::new();
     focus.connect_enter({
         let input = Rc::clone(input);
@@ -155,10 +156,10 @@ fn install_focus(area: &gtk4::GLArea, input: &Rc<dyn SurfaceInputSink>) {
         let input = Rc::clone(input);
         move |_| input.handle(&SurfaceInputEvent::Focus(false))
     });
-    area.add_controller(focus);
+    widget.add_controller(focus);
 }
 
-fn install_key(area: &gtk4::GLArea, input: Rc<dyn SurfaceInputSink>) {
+fn install_key(widget: &gtk4::Widget, input: Rc<dyn SurfaceInputSink>) {
     let key = gtk4::EventControllerKey::new();
     key.connect_key_pressed({
         let input = Rc::clone(&input);
@@ -170,7 +171,7 @@ fn install_key(area: &gtk4::GLArea, input: Rc<dyn SurfaceInputSink>) {
     key.connect_key_released(move |_, keyval, keycode, state| {
         input.handle(&surface_key_event(false, keyval, keycode, state));
     });
-    area.add_controller(key);
+    widget.add_controller(key);
 }
 
 /// A key event carries its own modifier chord, so it needs no separate
