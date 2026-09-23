@@ -7,15 +7,17 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Orientation, Widget};
 use nami::Signal;
+use waterui_core::layout::{Layout, StretchAxis};
 use waterui_core::views::{SharedAnyViews, Views};
 use waterui_core::{Environment, Native};
 use waterui_layout::container::LazyContainer;
 use waterui_layout::stack::{LazyStackAxis, lazy_stack_axis};
 
 use crate::component::GtkComponent;
+use crate::components::fixed_container_widget::WuiFixedContainer;
 use crate::components::layout::keyed_model::{KeyedModel, list_item_id};
 use crate::renderer::GtkRenderer;
-use crate::util::store_watcher_guard;
+use crate::util::{effective_stretch_axis, store_watcher_guard};
 
 impl GtkComponent for Native<LazyContainer> {
     fn render(self, env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
@@ -37,10 +39,12 @@ impl GtkComponent for Native<LazyContainer> {
         // The axis, spacing and cross-axis alignment all come from the layout the
         // container was built with. Deriving the axis from `Layout::stretch_axis`
         // instead — a different question — is what laid every lazy `HStack` out
-        // vertically once the stacks became content-sized.
-        let axis = lazy_stack_axis(layout.as_ref()).unwrap_or_else(|| {
-            panic!("GTK LazyContainer supports the virtualizable stack layouts; got {layout:?}")
-        });
+        // vertically once the stacks became content-sized. Layouts that do not
+        // virtualize (the snackbar overlay's `AbsoluteLayout` layer) materialize
+        // into a `WuiFixedContainer` instead.
+        let Some(axis) = lazy_stack_axis(layout.as_ref()) else {
+            return render_fixed(layout, contents, &env);
+        };
         let (orientation, spacing, cross_alignment) = match &axis {
             LazyStackAxis::Vertical { spacing, alignment } => (
                 Orientation::Vertical,
@@ -53,6 +57,15 @@ impl GtkComponent for Native<LazyContainer> {
                 gtk_align_from_vertical(*alignment),
             ),
         };
+
+        // GtkListView exposes no inter-row spacing property (that one is
+        // GridView's); the stack's spacing becomes a margin on the bound child
+        // instead, which GTK's list machinery honours as the row gap.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "GTK spacing is integer pixels while WaterUI layout is f32"
+        )]
+        let spacing_px = spacing.max(0.0) as i32;
 
         // Create factory for lazy binding
         let factory = gtk4::SignalListItemFactory::new();
@@ -84,6 +97,12 @@ impl GtkComponent for Native<LazyContainer> {
                 // Render with a fresh renderer to avoid holding a raw pointer.
                 let mut renderer = GtkRenderer::new();
                 let widget = renderer.render_any(view, &env_clone);
+                if spacing_px > 0 {
+                    match orientation {
+                        Orientation::Vertical => widget.set_margin_bottom(spacing_px),
+                        _ => widget.set_margin_end(spacing_px),
+                    }
+                }
                 list_item.set_child(Some(&widget));
             } else {
                 list_item.set_child(Option::<&Widget>::None);
@@ -100,13 +119,6 @@ impl GtkComponent for Native<LazyContainer> {
         let selection = gtk4::NoSelection::new(Some(model.store()));
         let list_view = gtk4::ListView::new(Some(selection), Some(factory));
         list_view.set_orientation(orientation);
-        // GTK spaces list rows through the widget's CSS box, so the stack's
-        // spacing becomes the inter-row gap rather than being dropped.
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "GTK spacing is integer pixels while WaterUI layout is f32"
-        )]
-        list_view.set_property("row-spacing", spacing.max(0.0) as i32);
         match orientation {
             Orientation::Vertical => list_view.set_halign(cross_alignment),
             _ => list_view.set_valign(cross_alignment),
@@ -133,6 +145,50 @@ impl GtkComponent for Native<LazyContainer> {
 
         list_view.upcast()
     }
+}
+
+/// Realizes a `LazyContainer` whose layout is not a virtualizable stack —
+/// today `AbsoluteLayout`, which the snackbar overlay uses for its
+/// full-window layer. Membership changes rebuild the whole child set: these
+/// containers carry a handful of self-positioning children, so list
+/// virtualization would buy nothing.
+fn render_fixed(
+    layout: Box<dyn Layout>,
+    contents: SharedAnyViews,
+    env: &Environment,
+) -> Widget {
+    let container = WuiFixedContainer::new(layout, materialize_children(&contents, env));
+    container.set_hexpand(true);
+    container.set_vexpand(true);
+    let contents_guard = contents.watch(.., {
+        let contents = contents.clone();
+        let container = container.clone();
+        let env = env.clone();
+        move |_| {
+            let contents = contents.clone();
+            let container = container.clone();
+            let env = env.clone();
+            glib::idle_add_local_once(move || {
+                container.set_children(materialize_children(&contents, &env));
+            });
+        }
+    });
+    store_watcher_guard(&container, Box::new(contents_guard));
+    container.upcast()
+}
+
+fn materialize_children(
+    contents: &SharedAnyViews,
+    env: &Environment,
+) -> Vec<(Widget, StretchAxis)> {
+    (0..contents.len().get())
+        .filter_map(|index| contents.get_view(index))
+        .map(|view| {
+            let axis = effective_stretch_axis(&view);
+            let mut renderer = GtkRenderer::new();
+            (renderer.render_any(view, env), axis)
+        })
+        .collect()
 }
 
 /// Maps a `WaterUI` cross-axis alignment onto GTK's, for a vertical stack.
