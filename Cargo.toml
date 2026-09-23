@@ -72,31 +72,31 @@ libloading = "0.9"
 [patch.crates-io]
 waterui-image = { git = "https://github.com/water-rs/image", rev = "6b3077431d2edccfd6c7d0b4fb45d69bd1d5bc56" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "12553db2de92e66ff919f56c6dd98ba42f757a00" }
-waterui = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-assets = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-assets-core = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-assets-macros = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-assets-planner = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-backend-core = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-controls = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-core = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-dylib = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-form = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-graphics = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-icon = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-internal = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-layout = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-locale = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-macros = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-media = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-navigation = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-shape = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-text = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-url = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-video = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-watcher-set = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
-waterui-webview = { git = "https://github.com/water-rs/waterui", rev = "002ab063bdd1acbc1ac1ebce7fc6237028b8a6e6" }
+waterui = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-assets = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-assets-core = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-assets-macros = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-assets-planner = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-backend-core = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-controls = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-core = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-dylib = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-form = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-graphics = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-icon = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-internal = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-layout = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-locale = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-macros = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-media = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-navigation = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-shape = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-text = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-url = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-video = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-watcher-set = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
+waterui-webview = { git = "https://github.com/water-rs/waterui", rev = "b838d734257389369b78b9d6a40d1fdf2a2445f2" }
 
 [build-dependencies]
 pkg-config = "0.3"
