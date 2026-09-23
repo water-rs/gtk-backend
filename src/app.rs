@@ -1,6 +1,7 @@
 //! GTK Application setup and lifecycle management.
 
 use std::future::Future;
+use std::num::NonZeroU32;
 
 use executor_core::{
     LocalExecutor,
@@ -44,6 +45,36 @@ impl LocalExecutor for GtkMainThreadExecutor {
     }
 }
 
+/// The fastest refresh rate GDK reports on the default display — the frame
+/// budget the monitored executor paces main-thread task polls against.
+fn display_refresh_rate() -> waterui::task::RefreshRate {
+    use waterui::task::RefreshRate;
+
+    let Some(display) = gtk4::gdk::Display::default() else {
+        tracing::debug!("no GDK display; executor frame budget uses the headless rate");
+        return RefreshRate::HEADLESS;
+    };
+    let monitors = display.monitors();
+    let millihertz = (0..monitors.n_items())
+        .filter_map(|index| monitors.item(index))
+        .filter_map(|object| object.downcast::<gtk4::gdk::Monitor>().ok())
+        .map(|monitor| monitor.refresh_rate())
+        .filter(|rate| *rate > 0)
+        .max()
+        .and_then(|rate| u32::try_from(rate).ok())
+        .and_then(NonZeroU32::new);
+    // A display that reports no rate paces frames at the nominal 60 Hz.
+    millihertz.map_or_else(
+        || {
+            tracing::debug!(
+                "no GDK monitor reports a refresh rate; executor frame budget uses the headless rate"
+            );
+            RefreshRate::HEADLESS
+        },
+        RefreshRate::from_millihertz,
+    )
+}
+
 /// Initialize executors for GTK apps on the main thread.
 ///
 /// Returns the inspector endpoint, which the caller must keep alive and install
@@ -67,8 +98,11 @@ pub fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRunti
     let inspector_probe = inspector
         .as_ref()
         .map(waterui::inspector::InspectorRuntime::runtime_probe);
+    // `activate` fires after `gtk4::init` opened the display, so GDK's
+    // monitor refresh rate is queryable here.
     let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
         GtkMainThreadExecutor,
+        display_refresh_rate(),
         inspector_probe,
     ));
 
