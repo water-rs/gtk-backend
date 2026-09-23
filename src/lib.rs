@@ -60,11 +60,6 @@ pub use renderer::GtkRenderer;
 // Re-export types needed by generated GTK entry points
 #[cfg(target_os = "linux")]
 pub use waterui_core::Environment;
-
-#[cfg(all(
-    test,
-    target_os = "linux",
-    feature = "webview-system",
-    gtk_webkitgtk_link_available
-))]
-mod webview_system_tests;
+// The WebKitGTK system tests live in `tests/webview_system.rs` — a
+// `harness = false` integration binary, because GTK and WebKitGTK must own the
+// process's real main thread and libtest cannot provide it.

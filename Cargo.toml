@@ -103,8 +103,21 @@ pkg-config = "0.3"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 waterui-webview = { version = "0.5.0", features = ["conformance"] }
+# The webview system-test cases await backend events on a channel receiver
+# rather than polling a flag on a timer.
+async-channel = "2"
 # The concrete filters the rendering tests run through `AppliedFilter`.
 filtrate = "0.2"
+
+# The WebKitGTK system tests are a `harness = false` binary: GTK and WebKitGTK
+# must be initialised and torn down on the process's real main thread, which
+# libtest — every `#[test]` runs on a throwaway worker — cannot provide. Its
+# `main` owns the main thread and runs each case sequentially; nextest cannot
+# enumerate its cases, so CI invokes the binary via `cargo test`.
+[[test]]
+name = "webview_system"
+harness = false
+required-features = ["webview-system"]
 
 [features]
 default = []
