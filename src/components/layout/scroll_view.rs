@@ -107,7 +107,7 @@ impl GtkComponent for Native<ScrollView> {
             let scrolled_for_watch = scrolled_window.clone();
             let requested_for_watch = Rc::clone(&requested);
             let guard = generation.watch(move |_| {
-                let target = target.get();
+                let target = target.snapshot();
                 requested_for_watch.set(Some(target));
                 let scrolled_window = scrolled_for_watch.clone();
                 glib::idle_add_local_once(move || {

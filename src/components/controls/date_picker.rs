@@ -19,7 +19,7 @@ impl GtkComponent for Native<DatePickerConfig> {
         root.append(&label);
 
         let calendar = Calendar::new();
-        apply_calendar_date(&calendar, config.value.get());
+        apply_calendar_date(&calendar, config.value.snapshot());
 
         let value = config.value.clone();
         calendar.connect_day_selected(move |calendar| {
@@ -31,7 +31,7 @@ impl GtkComponent for Native<DatePickerConfig> {
                     .expect("GTK Calendar day must fit jiff::Date"),
             )
             .expect("GTK Calendar selected date must be representable");
-            let current = value.get();
+            let current = value.snapshot();
             let time = current.time();
             value.set(date.at(
                 time.hour(),

@@ -42,11 +42,11 @@ impl GtkComponent for Native<ResolvedTextFieldConfig> {
         let prompt = config.prompt.content;
 
         // Set placeholder text
-        let prompt_text = prompt.get().to_plain();
+        let prompt_text = prompt.snapshot().to_plain();
         entry.set_placeholder_text(Some(&prompt_text));
 
         // Set initial value
-        entry.set_text(binding.get().to_plain().as_str());
+        entry.set_text(binding.snapshot().to_plain().as_str());
 
         // Watch for binding changes -> update entry
         // Clone before .computed() since it consumes self
@@ -74,7 +74,7 @@ impl GtkComponent for Native<ResolvedTextFieldConfig> {
             }
         });
 
-        let selection_items = Rc::new(RefCell::new(selection_menu.get()));
+        let selection_items = Rc::new(RefCell::new(selection_menu.snapshot()));
         let selection_guard = selection_menu.watch({
             let selection_items = selection_items.clone();
             move |ctx| {
@@ -86,7 +86,7 @@ impl GtkComponent for Native<ResolvedTextFieldConfig> {
         // Watch for entry changes -> update binding
         entry.connect_changed(move |entry| {
             let text = entry.text().to_string();
-            let current = binding.get();
+            let current = binding.snapshot();
             assert!(
                 current.is_plain(),
                 "GTK TextField cannot edit non-plain StyledStr yet; rich text editing backend support is pending"

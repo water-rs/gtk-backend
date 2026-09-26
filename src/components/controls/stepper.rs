@@ -24,8 +24,8 @@ impl GtkComponent for Native<StepperConfig> {
         // Create the spin button (stepper)
         let start = *config.range.start();
         let end = *config.range.end();
-        let initial_value = config.value.get();
-        let step = config.step.get();
+        let initial_value = config.value.snapshot();
+        let step = config.step.snapshot();
 
         let adjustment = Adjustment::new(
             f64::from(initial_value),
@@ -78,7 +78,7 @@ impl GtkComponent for Native<StepperConfig> {
         spin_button.connect_value_changed(move |btn| {
             #[allow(clippy::cast_possible_truncation)]
             let value = btn.value() as i32;
-            if binding_for_signal.get() != value {
+            if binding_for_signal.snapshot() != value {
                 binding_for_signal.set(value);
             }
         });

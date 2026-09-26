@@ -19,7 +19,7 @@ fn item_label(item: &PickerItem<Id>, env: &Environment) -> String {
     item.content
         .resolve(env)
         .content
-        .get()
+        .snapshot()
         .to_plain()
         .to_string()
 }
@@ -51,7 +51,7 @@ impl GtkComponent for Native<PickerConfig> {
                 .label
                 .resolve(env)
                 .accessibility_label()
-                .get()
+                .snapshot()
                 .to_plain();
             dropdown.update_property(&[gtk4::accessible::Property::Label(label.as_str())]);
         }
@@ -70,7 +70,7 @@ impl GtkComponent for Native<PickerConfig> {
                     .map(|item| item_label(item, &env))
                     .collect();
                 let new_ids: Vec<_> = item_list.iter().map(|item| item.tag).collect();
-                let current_id = selection.get();
+                let current_id = selection.snapshot();
 
                 *ids.borrow_mut() = new_ids;
 
@@ -89,7 +89,7 @@ impl GtkComponent for Native<PickerConfig> {
             })
         };
 
-        refresh_items(items.get());
+        refresh_items(items.snapshot());
 
         let ids_for_handler = ids.clone();
         let selection_for_handler = selection.clone();
@@ -99,7 +99,7 @@ impl GtkComponent for Native<PickerConfig> {
             let selected_idx = dropdown.selected() as usize;
             let ids_ref = ids_for_handler.borrow();
             if let Some(selected_id) = ids_ref.as_slice().get(selected_idx).copied()
-                && selection_for_handler.get() != selected_id
+                && selection_for_handler.snapshot() != selected_id
             {
                 selection_for_handler.set(selected_id);
             }
@@ -151,7 +151,7 @@ fn render_radio_group(env: &Environment, config: PickerConfig) -> Widget {
             .label
             .resolve(env)
             .accessibility_label()
-            .get()
+            .snapshot()
             .to_plain();
         container.update_property(&[gtk4::accessible::Property::Label(label.as_str())]);
     }
@@ -186,7 +186,7 @@ fn render_radio_group(env: &Environment, config: PickerConfig) -> Widget {
                 button.connect_toggled({
                     let selection = selection.clone();
                     move |button| {
-                        if button.is_active() && selection.get() != id {
+                        if button.is_active() && selection.snapshot() != id {
                             selection.set(id);
                         }
                     }
@@ -196,7 +196,7 @@ fn render_radio_group(env: &Environment, config: PickerConfig) -> Widget {
                 new_ids.push(id);
             }
 
-            if let Some(index) = new_ids.iter().position(|id| *id == selection.get()) {
+            if let Some(index) = new_ids.iter().position(|id| *id == selection.snapshot()) {
                 new_buttons[index].set_active(true);
             }
             *buttons.borrow_mut() = new_buttons;
@@ -204,7 +204,7 @@ fn render_radio_group(env: &Environment, config: PickerConfig) -> Widget {
         })
     };
 
-    rebuild(items.get());
+    rebuild(items.snapshot());
 
     // Watch binding changes -> activate the matching radio button. GTK's
     // group semantics clear the previous button, and the toggled handler

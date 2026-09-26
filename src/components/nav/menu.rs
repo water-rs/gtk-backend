@@ -23,7 +23,7 @@ impl GtkComponent for Native<ResolvedMenu> {
         let popover = Popover::new();
         button.set_popover(Some(&popover));
 
-        rebuild_menu_popover(&popover, menu.items.get(), env);
+        rebuild_menu_popover(&popover, menu.items.snapshot(), env);
 
         let guard = menu.items.watch({
             let popover = popover;
@@ -66,9 +66,9 @@ pub(crate) fn append_menu_items(
     for item in items {
         match item {
             ResolvedMenuItem::Command(command) => {
-                let button = gtk4::Button::with_label(&command.label.content.get().to_plain());
+                let button = gtk4::Button::with_label(&command.label.content.snapshot().to_plain());
                 button.add_css_class("flat");
-                button.set_sensitive(!command.disabled.get());
+                button.set_sensitive(!command.disabled.snapshot());
 
                 let disabled_guard = command.disabled.watch({
                     let button = button.clone();
@@ -97,14 +97,14 @@ pub(crate) fn append_menu_items(
             }
             ResolvedMenuItem::Menu(menu) => {
                 let button = MenuButton::new();
-                let title = gtk4::Label::new(Some(&menu.label.content.get().to_plain()));
+                let title = gtk4::Label::new(Some(&menu.label.content.snapshot().to_plain()));
                 title.set_xalign(0.0);
                 button.set_child(Some(&title));
                 button.add_css_class("flat");
 
                 let popover = Popover::new();
                 button.set_popover(Some(&popover));
-                rebuild_menu_popover(&popover, menu.items.get(), env);
+                rebuild_menu_popover(&popover, menu.items.snapshot(), env);
 
                 let guard = menu.items.watch({
                     let popover = popover.clone();

@@ -139,7 +139,7 @@ mod imp {
                         reason = "pixel_size bounds both sides to 65535, which f32 holds exactly"
                     )]
                     let transform = picture.transform_to(pixel_size.0 as f32, pixel_size.1 as f32);
-                    let recording = picture.recording().get();
+                    let recording = picture.recording().snapshot();
                     let bitmap =
                         rasterize_recording(&recording, pixel_size.0, pixel_size.1, transform);
                     let stride =

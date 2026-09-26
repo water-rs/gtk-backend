@@ -27,7 +27,7 @@ impl GtkComponent for Native<MultiDatePickerConfig> {
         let value = config.value.clone();
         let decorated = config.decorated;
 
-        apply_multi_date_state(&calendar, &value.get(), &decorated.get());
+        apply_multi_date_state(&calendar, &value.snapshot(), &decorated.snapshot());
 
         calendar.connect_day_selected({
             let calendar = calendar.clone();
@@ -40,7 +40,7 @@ impl GtkComponent for Native<MultiDatePickerConfig> {
                     selected.day_of_month() as i8,
                 )
                 .expect("GTK Calendar selected date must be representable");
-                let mut dates = value.get();
+                let mut dates = value.snapshot();
                 if let Some(index) = dates.iter().position(|existing| *existing == date) {
                     dates.remove(index);
                 } else {
@@ -56,13 +56,13 @@ impl GtkComponent for Native<MultiDatePickerConfig> {
             let calendar = calendar.clone();
             let value = value.clone();
             let decorated = decorated.clone();
-            move |_, _| apply_multi_date_state(&calendar, &value.get(), &decorated.get())
+            move |_, _| apply_multi_date_state(&calendar, &value.snapshot(), &decorated.snapshot())
         });
         calendar.connect_notify_local(Some("year"), {
             let calendar = calendar.clone();
             let value = value.clone();
             let decorated = decorated.clone();
-            move |_, _| apply_multi_date_state(&calendar, &value.get(), &decorated.get())
+            move |_, _| apply_multi_date_state(&calendar, &value.snapshot(), &decorated.snapshot())
         });
 
         let value_guard = value.watch({
@@ -70,7 +70,7 @@ impl GtkComponent for Native<MultiDatePickerConfig> {
             let decorated = decorated.clone();
             move |ctx: nami::watcher::Context<Vec<Date>>| {
                 let dates = ctx.into_value();
-                let decorated_dates = decorated.get();
+                let decorated_dates = decorated.snapshot();
                 let calendar = calendar.clone();
                 glib::idle_add_local_once(move || {
                     apply_multi_date_state(&calendar, &dates, &decorated_dates);
@@ -83,7 +83,7 @@ impl GtkComponent for Native<MultiDatePickerConfig> {
             let value = value.clone();
             move |ctx: nami::watcher::Context<Vec<Date>>| {
                 let decorated_dates = ctx.into_value();
-                let selected_dates = value.get();
+                let selected_dates = value.snapshot();
                 let calendar = calendar.clone();
                 glib::idle_add_local_once(move || {
                     apply_multi_date_state(&calendar, &selected_dates, &decorated_dates);

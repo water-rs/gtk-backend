@@ -26,7 +26,12 @@ impl GtkComponent for Native<TextConfig> {
         let paragraph_alignment = config.paragraph_alignment;
 
         let label = Label::new(None);
-        apply_styled_content(&label, content.get(), paragraph_alignment.get(), env);
+        apply_styled_content(
+            &label,
+            content.snapshot(),
+            paragraph_alignment.snapshot(),
+            env,
+        );
 
         // Match native behavior: read-only text should not be selection-active by default.
         label.set_selectable(false);
@@ -57,7 +62,7 @@ impl GtkComponent for Native<TextConfig> {
                 };
                 let content = ctx.into_value();
                 let env = env.clone();
-                let alignment = paragraph_alignment.get();
+                let alignment = paragraph_alignment.snapshot();
                 // Schedule update on GTK main thread
                 glib::idle_add_local_once(move || {
                     apply_styled_content(&label, content, alignment, &env);
@@ -94,7 +99,12 @@ impl GtkComponent for Native<TextConfig> {
                 let content = content.clone();
                 let paragraph_alignment = paragraph_alignment.clone();
                 glib::idle_add_local_once(move || {
-                    apply_styled_content(&label, content.get(), paragraph_alignment.get(), &env);
+                    apply_styled_content(
+                        &label,
+                        content.snapshot(),
+                        paragraph_alignment.snapshot(),
+                        &env,
+                    );
                 });
             }));
         }
@@ -113,7 +123,12 @@ impl GtkComponent for Native<TextConfig> {
                 if insensitive == previous.contains(gtk4::StateFlags::INSENSITIVE) {
                     return;
                 }
-                apply_styled_content(label, content.get(), paragraph_alignment.get(), &env);
+                apply_styled_content(
+                    label,
+                    content.snapshot(),
+                    paragraph_alignment.snapshot(),
+                    &env,
+                );
             });
         }
 
@@ -175,7 +190,7 @@ fn styled_to_markup(content: StyledStr, env: &Environment, sensitive: bool) -> S
 
 fn style_to_markup_attrs(style: &Style, env: &Environment, sensitive: bool) -> String {
     let mut attrs = String::new();
-    let resolved_font: ResolvedFont = style.font.resolve(env).get();
+    let resolved_font: ResolvedFont = style.font.resolve(env).snapshot();
     let font_size = resolved_font.size.max(1.0);
     let _ = write!(attrs, " size=\"{font_size:.2}pt\"");
     let _ = write!(
@@ -222,10 +237,10 @@ fn style_to_markup_attrs(style: &Style, env: &Environment, sensitive: bool) -> S
     let foreground = style
         .foreground
         .as_ref()
-        .map(|foreground| foreground.resolve(env).get())
+        .map(|foreground| foreground.resolve(env).snapshot())
         .or_else(|| {
             if sensitive {
-                installed_color_signal::<Foreground>(env).map(|signal| signal.get())
+                installed_color_signal::<Foreground>(env).map(|signal| signal.snapshot())
             } else {
                 None
             }
@@ -235,7 +250,7 @@ fn style_to_markup_attrs(style: &Style, env: &Environment, sensitive: bool) -> S
     }
 
     if let Some(background) = &style.background {
-        emit_color_attrs(&mut attrs, "background", background.resolve(env).get());
+        emit_color_attrs(&mut attrs, "background", background.resolve(env).snapshot());
     }
 
     attrs

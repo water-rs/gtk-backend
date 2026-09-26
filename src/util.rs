@@ -20,7 +20,7 @@ where
     S: Signal,
 {
     let guard = signal.watch(watcher);
-    (signal.get(), guard)
+    (signal.snapshot(), guard)
 }
 
 /// Widget-data key under which every reactive watcher guard for a widget is
@@ -201,6 +201,19 @@ mod tests {
     use waterui_graphics::color::Srgb;
 
     use super::*;
+
+    /// The nami pin regression: the manifest declares `nami = "=0.11.1"` and
+    /// `[patch.crates-io]` redirects it to the rev carrying nami#26, where
+    /// `Signal::get` is `Signal::snapshot` and `Binding::get` is gone. If the
+    /// graph ever resolves a pre-rename nami again this file stops compiling
+    /// rather than silently un-pinning.
+    #[test]
+    fn subscribe_then_get_snapshots_through_the_pinned_signal_api() {
+        let binding = nami::Binding::container(41i32);
+        let (initial, _guard) = subscribe_then_get(&binding, |_| {});
+        assert_eq!(initial, 41);
+        assert_eq!(binding.snapshot(), 41);
+    }
 
     /// A saturated channel can come back from the sRGB resolution round trip
     /// a hair under 1.0; the byte conversion must round to 255 rather than

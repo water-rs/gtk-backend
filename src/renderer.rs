@@ -202,7 +202,7 @@ fn attach_focus_metadata(widget: Widget, binding: &Binding<bool>) -> Widget {
         let binding = binding.clone();
         move |anchor, _| {
             let focused = anchor_holds_focus(anchor);
-            if binding.get() != focused {
+            if binding.snapshot() != focused {
                 binding.set(focused);
             }
         }
@@ -1289,7 +1289,7 @@ impl GtkRenderer {
                     let env = env.clone();
                     let popover_state = popover_state;
                     move |_, _, x, y| {
-                        let entries = items.get();
+                        let entries = items.snapshot();
                         if entries.is_empty() {
                             return;
                         }
@@ -1319,7 +1319,7 @@ impl GtkRenderer {
             let source = gtk4::DragSource::new();
             source.set_actions(gdk4::DragAction::COPY);
             source.connect_prepare(move |_, _, _| {
-                let payload = data.get();
+                let payload = data.snapshot();
                 Some(drag_content_provider(&payload))
             });
             widget.add_controller(source);
@@ -1759,14 +1759,14 @@ mod focus_tests {
         // GTK focuses the first focusable child on map; the write-back turns
         // binding A on without any explicit request.
         wait_until(|| focus_inside(&window, &entry_a));
-        wait_until(|| binding_a.get());
-        assert!(!binding_b.get());
+        wait_until(|| binding_a.snapshot());
+        assert!(!binding_b.snapshot());
 
         binding_b.set(true);
         wait_until(|| focus_inside(&window, &entry_b));
         wait_until(|| !focus_inside(&window, &entry_a));
         // A losing focus writes false back through its own binding.
-        wait_until(|| !binding_a.get());
+        wait_until(|| !binding_a.snapshot());
 
         binding_b.set(false);
         wait_until(|| !focus_inside(&window, &entry_b));
@@ -1784,14 +1784,14 @@ mod focus_tests {
 
         // GTK auto-focuses the first focusable child on map; the anchor's
         // state-flags observer must write that back to the binding.
-        wait_until(|| binding.get());
+        wait_until(|| binding.snapshot());
         assert!(focus_inside(&window, &entry));
 
         gtk4::prelude::RootExt::set_focus(&window, None::<&Widget>);
-        wait_until(|| !binding.get());
+        wait_until(|| !binding.snapshot());
 
         entry.grab_focus();
-        wait_until(|| binding.get());
+        wait_until(|| binding.snapshot());
     }
 
     #[test]
@@ -1859,7 +1859,7 @@ mod focus_tests {
         // child on map; the write-back reports it through the binding. The
         // pending marker staying cleared is what proves our deferred path
         // did not fire.
-        wait_until(|| binding.get());
+        wait_until(|| binding.snapshot());
         assert!(focus_inside(&window, &entry));
     }
 
@@ -1875,13 +1875,13 @@ mod focus_tests {
 
         // GTK auto-focuses the first focusable child on map.
         wait_until(|| focus_inside(&window, &entry));
-        wait_until(|| binding.get());
+        wait_until(|| binding.snapshot());
 
         // A redundant `set(true)` and a direct grab must not disturb the
         // already-satisfied focus state.
         binding.set(true);
         assert!(entry.grab_focus());
         wait_until(|| focus_inside(&window, &entry));
-        assert!(binding.get());
+        assert!(binding.snapshot());
     }
 }

@@ -2825,7 +2825,7 @@ unsafe extern "C" fn on_decide_policy(
     // SAFETY: `user_data` is the `DecidePolicyData` box the signal connection
     // owns for the connection's lifetime.
     let data = unsafe { &*(user_data.cast::<DecidePolicyData>()) };
-    if data.shared.redirects_enabled.borrow().get() {
+    if data.shared.redirects_enabled.borrow().snapshot() {
         return 0;
     }
 

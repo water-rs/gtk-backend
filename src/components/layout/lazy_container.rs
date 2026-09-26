@@ -31,7 +31,7 @@ impl GtkComponent for Native<LazyContainer> {
         let env = env.clone();
 
         let model = Rc::new(KeyedModel::new());
-        let initial_ids = (0..contents.len().get())
+        let initial_ids = (0..contents.len().snapshot())
             .map(|index| {
                 let id = contents
                     .get_id(index)
@@ -51,8 +51,10 @@ impl GtkComponent for Native<LazyContainer> {
             return render_fixed(layout, &contents, &env);
         };
         let (orientation, spacing) = match &axis {
-            LazyStackAxis::Vertical { spacing, .. } => (Orientation::Vertical, spacing.get()),
-            LazyStackAxis::Horizontal { spacing, .. } => (Orientation::Horizontal, spacing.get()),
+            LazyStackAxis::Vertical { spacing, .. } => (Orientation::Vertical, spacing.snapshot()),
+            LazyStackAxis::Horizontal { spacing, .. } => {
+                (Orientation::Horizontal, spacing.snapshot())
+            }
         };
         let (scrolls_h, scrolls_v) = match orientation {
             Orientation::Vertical => (false, true),
@@ -241,7 +243,7 @@ fn materialize_children(
     contents: &SharedAnyViews<AnyView>,
     env: &Environment,
 ) -> Vec<(Widget, StretchAxis)> {
-    (0..contents.len().get())
+    (0..contents.len().snapshot())
         .filter_map(|index| contents.get_view(index))
         .map(|view| {
             let mut renderer = GtkRenderer::new();
