@@ -46,7 +46,7 @@ impl GtkComponent for Native<SliderConfig> {
         let binding = config.value;
 
         // Set initial value
-        scale.set_value(binding.get());
+        scale.set_value(binding.snapshot());
 
         // Watch for binding changes -> update scale
         // Clone before .computed() since it consumes self
@@ -67,7 +67,7 @@ impl GtkComponent for Native<SliderConfig> {
         let binding_clone = binding;
         scale.connect_value_changed(move |scale| {
             let value = scale.value();
-            if (binding_clone.get() - value).abs() > f64::EPSILON {
+            if (binding_clone.snapshot() - value).abs() > f64::EPSILON {
                 binding_clone.set(value);
             }
         });

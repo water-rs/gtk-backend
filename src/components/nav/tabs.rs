@@ -59,7 +59,7 @@ impl GtkComponent for Native<TabsLayout> {
         }
 
         // Set initial selection
-        let initial_selection = tabs.selection.get();
+        let initial_selection = tabs.selection.snapshot();
         if let Some(index) = tab_ids.iter().position(|id| *id == initial_selection) {
             #[allow(clippy::cast_possible_wrap)]
             notebook.set_current_page(Some(index as u32));
@@ -87,7 +87,7 @@ impl GtkComponent for Native<TabsLayout> {
             let tab_ids = tab_ids.clone();
             move |_, _, page_num| {
                 if let Some(id) = tab_ids.as_slice().get(page_num as usize)
-                    && binding.get() != *id
+                    && binding.snapshot() != *id
                 {
                     binding.set(*id);
                 }

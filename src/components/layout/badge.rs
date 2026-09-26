@@ -77,7 +77,7 @@ impl GtkComponent for Native<BadgeConfig> {
         );
 
         let env = env.clone();
-        let combined = value.zip(&color.map(move |c| c.resolve(&env).get()));
+        let combined = value.zip(&color.map(move |c| c.resolve(&env).snapshot()));
         let (initial, guard) = subscribe_then_get(&combined, {
             let badge = badge.clone();
             let css = css.clone();

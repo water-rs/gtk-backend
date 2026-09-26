@@ -176,11 +176,11 @@ impl GtkComponent for NavigationView {
             )
         });
 
-        if bar.hidden.get() {
+        if bar.hidden.snapshot() {
             header_bar.set_visible(false);
         }
         if let Some(color) = &bar.color {
-            scoped_css.set_declarations(&css_for_header_bar_color(color.get()));
+            scoped_css.set_declarations(&css_for_header_bar_color(color.snapshot()));
         }
 
         container.append(&header_bar);
@@ -252,7 +252,7 @@ impl GtkComponent for NavigationStack<(), ()> {
             navigation_back_label()
                 .resolve(env)
                 .accessibility_label()
-                .get()
+                .snapshot()
                 .to_plain()
                 .as_str(),
         );
@@ -556,9 +556,9 @@ impl GtkNavigationControllerInner {
                     bottom_holder.set_visible(!hidden);
                 });
             });
-            self.header_bar.set_visible(!hidden.get());
-            self.bar_container.set_visible(!hidden.get());
-            self.bottom_holder.set_visible(!hidden.get());
+            self.header_bar.set_visible(!hidden.snapshot());
+            self.bar_container.set_visible(!hidden.snapshot());
+            self.bottom_holder.set_visible(!hidden.snapshot());
             self.active_bar_guards.push(hidden_guard);
         } else {
             self.header_bar.set_visible(true);
@@ -568,7 +568,7 @@ impl GtkNavigationControllerInner {
 
         if let Some(color) = &top.bar_color {
             self.color_css
-                .set_declarations(&css_for_header_bar_color(color.get()));
+                .set_declarations(&css_for_header_bar_color(color.snapshot()));
             let scoped_css = self.color_css.clone();
             let color_guard = color.watch(
                 move |ctx: nami::watcher::Context<waterui_graphics::color::ResolvedColor>| {
@@ -715,7 +715,7 @@ impl GtkComponent for NavigationSplitLayout {
                 placeholder.clone(),
                 move |selected| AnyView::new(content.build(selected)),
             );
-            switch_content(primary_selection.get());
+            switch_content(primary_selection.snapshot());
             guards.push(primary_selection.computed().watch({
                 let switch_content = Rc::clone(&switch_content);
                 move |ctx: nami::watcher::Context<Option<Id>>| {
@@ -729,7 +729,7 @@ impl GtkComponent for NavigationSplitLayout {
             cached_split_host_switcher(detail_host.clone(), env, placeholder, move |selected| {
                 AnyView::new(detail.build(selected))
             });
-        switch_detail(detail_selection.get());
+        switch_detail(detail_selection.snapshot());
         guards.push(detail_selection.computed().watch({
             let switch_detail = Rc::clone(&switch_detail);
             move |ctx: nami::watcher::Context<Option<Id>>| {
@@ -759,7 +759,7 @@ impl GtkComponent for NavigationSplitLayout {
                 detail.set_visible(true);
             }
         };
-        apply_visibility(visibility.get());
+        apply_visibility(visibility.snapshot());
         guards.push(visibility.watch(
             move |ctx: nami::watcher::Context<
                 waterui_navigation::NavigationSplitColumnVisibility,

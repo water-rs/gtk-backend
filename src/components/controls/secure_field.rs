@@ -35,7 +35,7 @@ impl GtkComponent for Native<SecureFieldConfig> {
         let binding = config.value;
 
         // Set initial value
-        entry.set_text(binding.get().expose());
+        entry.set_text(binding.snapshot().expose());
 
         // Watch for binding changes -> update entry
         let guard = binding.computed().watch({
@@ -55,7 +55,7 @@ impl GtkComponent for Native<SecureFieldConfig> {
         // Watch for entry changes -> update binding
         entry.connect_changed(move |entry| {
             let text = entry.text().to_string();
-            let current = binding.get();
+            let current = binding.snapshot();
             if current.expose() != text {
                 // Create a new Secure value and set it
                 binding.set(Secure::new(text));

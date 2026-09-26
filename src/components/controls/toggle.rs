@@ -37,7 +37,7 @@ impl GtkComponent for Native<ToggleConfig> {
         let binding = config.toggle;
 
         // Set initial state
-        switch.set_active(binding.get());
+        switch.set_active(binding.snapshot());
 
         // Watch for binding changes -> update switch
         // Clone before .computed() since it consumes self
@@ -56,7 +56,7 @@ impl GtkComponent for Native<ToggleConfig> {
 
         // Watch for switch changes -> update binding
         switch.connect_state_set(move |_, state| {
-            if binding.get() != state {
+            if binding.snapshot() != state {
                 binding.set(state);
             }
             glib::Propagation::Proceed

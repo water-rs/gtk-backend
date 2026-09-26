@@ -27,7 +27,7 @@ impl GtkComponent for Native<ProgressConfig> {
         progress_bar.set_hexpand(true);
 
         // Set initial value (clamped to 0.0-1.0)
-        let initial = config.value.get().clamp(0.0, 1.0);
+        let initial = config.value.snapshot().clamp(0.0, 1.0);
         progress_bar.set_fraction(initial);
 
         // Watch for computed value changes -> update progress bar

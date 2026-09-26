@@ -120,7 +120,7 @@ pub fn apply_window_background(
             let signal = color.resolve(env);
 
             // Initial apply
-            apply_background_css(&css, signal.get());
+            apply_background_css(&css, signal.snapshot());
 
             // Reactive updates
             let guard = signal.watch({

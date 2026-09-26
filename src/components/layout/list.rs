@@ -43,7 +43,7 @@ impl GtkComponent for Native<ListConfig> {
         scrolled_window.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
 
         let model = Rc::new(KeyedModel::new());
-        let initial_ids = (0..contents.len().get())
+        let initial_ids = (0..contents.len().snapshot())
             .map(|index| {
                 let id = contents
                     .get_id(index)
@@ -131,7 +131,7 @@ impl GtkComponent for Native<ListConfig> {
                         .map(|(is_editing, deletable)| is_editing && deletable)
                         .computed();
 
-                    delete_btn.set_visible(show_delete.get());
+                    delete_btn.set_visible(show_delete.snapshot());
                     let visibility_guard = show_delete.watch({
                         let delete_btn = delete_btn.clone();
                         // A weak handle: the guard lives on `row_box` itself,
@@ -198,8 +198,8 @@ impl GtkComponent for Native<ListConfig> {
             let contents = contents.clone();
             let list_view_for_scroll = list_view.clone();
             guards.push(controller.generation().watch(move |_| {
-                let index = target.get();
-                let len = contents.len().get();
+                let index = target.snapshot();
+                let len = contents.len().snapshot();
                 assert!(
                     index < len,
                     "List scroll target {index} exceeds collection length {len}"
