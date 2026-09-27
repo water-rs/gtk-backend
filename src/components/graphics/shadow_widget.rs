@@ -31,7 +31,7 @@ mod imp {
     use super::*;
     use std::cell::{Cell, RefCell};
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     pub struct WuiShadow {
         pub kind: Cell<ShapeKind>,
         /// The unit-space outline, consulted only for a custom path: every
@@ -41,6 +41,19 @@ mod imp {
         pub blur: Cell<f32>,
         pub color: Cell<gdk4::RGBA>,
         pub child: RefCell<Option<Widget>>,
+    }
+
+    impl Default for WuiShadow {
+        fn default() -> Self {
+            Self {
+                kind: Cell::new(ShapeKind::default()),
+                commands: RefCell::new(Vec::new()),
+                offset: Cell::new((0.0, 0.0)),
+                blur: Cell::new(0.0),
+                color: Cell::new(gdk4::RGBA::new(0.0, 0.0, 0.0, 0.0)),
+                child: RefCell::new(None),
+            }
+        }
     }
 
     #[glib::object_subclass]
@@ -109,8 +122,8 @@ mod imp {
                     let path = gsk_path(&bez_path(&self.commands.borrow(), width, height));
                     snapshot.push_shadow(&[gsk::Shadow::new(color, dx, dy, blur)]);
                     let bounds = graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
-                    snapshot.append_node(&gsk::FillNode::new(
-                        &gsk::ColorNode::new(&color, &bounds),
+                    snapshot.append_node(gsk::FillNode::new(
+                        gsk::ColorNode::new(&color, &bounds),
                         &path,
                         gsk::FillRule::Winding,
                     ));

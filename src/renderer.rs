@@ -985,7 +985,7 @@ impl GtkRenderer {
                 &content,
             );
             *weak.borrow_mut() = Some(wrapper.downgrade());
-            store_watcher_guard(wrapper.upcast_ref(), Box::new(guard));
+            store_watcher_guard(&wrapper, Box::new(guard));
             wrapper.upcast()
         });
 
