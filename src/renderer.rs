@@ -20,6 +20,7 @@ use waterui::component::list::ListConfig;
 use waterui::component::progress::ProgressConfig;
 use waterui::cursor::{Cursor, CursorStyle};
 use waterui::drag_drop::{DragData, Draggable, DropDestination};
+use waterui::gesture::PointerButton;
 use waterui::interaction::Hittable;
 use waterui::metadata::anchored_overlay::AnchoredOverlay;
 use waterui::metadata::context_menu::ResolvedContextMenu;
@@ -491,6 +492,24 @@ fn call_boxed_action(action: &Rc<RefCell<BoxedAction<()>>>, env: &Environment) {
     }
 }
 
+/// The button a `GtkGestureSingle` sequence runs on, in `WaterUI` terms. GDK
+/// numbers the primary button 1, middle 2, secondary 3 and the side buttons
+/// 4 and 5 (back, forward), as `surface_pointer_button` in
+/// `browser_input.rs` does. `GtkGestureSingle`'s `button` property selects a
+/// single button rather than a mask, so the controllers below listen on 0
+/// (any) and the `buttons` set filters each press; buttons outside the five
+/// the framework names never satisfy it.
+const fn gesture_pointer_button(gtk_button: u32) -> Option<PointerButton> {
+    match gtk_button {
+        1 => Some(PointerButton::Primary),
+        2 => Some(PointerButton::Middle),
+        3 => Some(PointerButton::Secondary),
+        4 => Some(PointerButton::Back),
+        5 => Some(PointerButton::Forward),
+        _ => None,
+    }
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -515,16 +534,25 @@ fn install_gesture_observer(
     match gesture {
         Gesture::Tap(tap) => {
             let click = gtk4::GestureClick::new();
-            click.set_button(1);
+            // 0 listens on every button; the mask filters each press.
+            click.set_button(0);
             click.set_propagation_phase(gtk4::PropagationPhase::Capture);
             let required_count = tap.count;
+            let buttons = tap.buttons;
             let env_for_handler = env;
             let action_for_handler = action.clone();
             click.connect_pressed(move |gesture, n_press, x, y| {
+                let Some(button) = gesture_pointer_button(gesture.current_button()) else {
+                    return;
+                };
+                if !buttons.accepts(button) {
+                    return;
+                }
                 if n_press as u32 >= required_count {
                     let tap_event = TapEvent {
                         location: GesturePoint::new(x as f32, y as f32),
                         count: n_press as u32,
+                        button,
                     };
                     let mut local_env = env_for_handler.clone();
                     local_env.insert(tap_event);
@@ -536,15 +564,24 @@ fn install_gesture_observer(
         }
         Gesture::LongPress(long_press) => {
             let press = gtk4::GestureLongPress::new();
+            press.set_button(0);
             press.set_delay_factor(f64::from(long_press.duration) / 500.0);
             press.set_propagation_phase(gtk4::PropagationPhase::Capture);
             let env_for_handler = env;
             let action_for_handler = action.clone();
             let duration = long_press.duration;
+            let buttons = long_press.buttons;
             press.connect_pressed(move |gesture, x, y| {
+                let Some(button) = gesture_pointer_button(gesture.current_button()) else {
+                    return;
+                };
+                if !buttons.accepts(button) {
+                    return;
+                }
                 let event = LongPressEvent {
                     location: GesturePoint::new(x as f32, y as f32),
                     duration: duration as f32,
+                    button,
                 };
                 let mut local_env = env_for_handler.clone();
                 local_env.insert(event);
@@ -555,20 +592,36 @@ fn install_gesture_observer(
         }
         Gesture::Drag(drag) => {
             let drag_gesture = gtk4::GestureDrag::new();
+            drag_gesture.set_button(0);
             drag_gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
             let min_distance = drag.min_distance;
+            let buttons = drag.buttons;
+            let drag_button = Rc::new(Cell::new(None));
             let drag_started = Rc::new(RefCell::new(false));
             {
                 let env_for_handler = env.clone();
                 let action_for_handler = action.clone();
                 let drag_started = drag_started.clone();
+                let drag_button = drag_button.clone();
                 drag_gesture.connect_drag_begin(move |gesture, x, y| {
                     *drag_started.borrow_mut() = false;
+                    let Some(button) = gesture_pointer_button(gesture.current_button()) else {
+                        gesture.set_state(gtk4::EventSequenceState::Denied);
+                        drag_button.set(None);
+                        return;
+                    };
+                    if !buttons.accepts(button) {
+                        gesture.set_state(gtk4::EventSequenceState::Denied);
+                        drag_button.set(None);
+                        return;
+                    }
+                    drag_button.set(Some(button));
                     let event = DragEvent {
                         phase: GesturePhase::Started,
                         location: GesturePoint::new(x as f32, y as f32),
                         translation: GesturePoint::new(0.0, 0.0),
                         velocity: GesturePoint::new(0.0, 0.0),
+                        button,
                     };
                     let mut local_env = env_for_handler.clone();
                     local_env.insert(event);
@@ -580,7 +633,11 @@ fn install_gesture_observer(
                 let env_for_handler = env.clone();
                 let action_for_handler = action.clone();
                 let drag_started = drag_started.clone();
+                let drag_button = drag_button.clone();
                 drag_gesture.connect_drag_update(move |gesture, offset_x, offset_y| {
+                    let Some(button) = drag_button.get() else {
+                        return;
+                    };
                     let distance = offset_x.hypot(offset_y) as f32;
                     if distance < min_distance && !*drag_started.borrow() {
                         return;
@@ -595,6 +652,7 @@ fn install_gesture_observer(
                         ),
                         translation: GesturePoint::new(offset_x as f32, offset_y as f32),
                         velocity: GesturePoint::new(0.0, 0.0),
+                        button,
                     };
                     let mut local_env = env_for_handler.clone();
                     local_env.insert(event);
@@ -605,6 +663,9 @@ fn install_gesture_observer(
                 let env_for_handler = env;
                 let action_for_handler = action.clone();
                 drag_gesture.connect_drag_end(move |gesture, offset_x, offset_y| {
+                    let Some(button) = drag_button.get() else {
+                        return;
+                    };
                     if !*drag_started.borrow() {
                         return;
                     }
@@ -617,6 +678,7 @@ fn install_gesture_observer(
                         ),
                         translation: GesturePoint::new(offset_x as f32, offset_y as f32),
                         velocity: GesturePoint::new(0.0, 0.0),
+                        button,
                     };
                     let mut local_env = env_for_handler.clone();
                     local_env.insert(event);
