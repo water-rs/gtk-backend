@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Drives one example through `water package --platform linux --backend gtk4
-# --release`, launches the staged binary directly, captures a settled
+# Drives one example through `water package --platform linux --backend gtk4`
+# (the release build), launches the staged binary directly, captures a settled
 # screenshot of its window, and diffs it against the golden in e2e/goldens/.
 # The release package keeps the binary a user would ship, so the metrics this
 # run records — binary size, settled RSS, and exec-to-first-window latency —
@@ -136,7 +136,7 @@ run_example() {
 
     # Packaging produces the same binary a user would run; measuring it keeps
     # size/RSS/startup honest instead of reporting debug-profile numbers.
-    if ! timeout "${PACKAGE_DEADLINE}" water package --platform linux --backend gtk4 --release --yes >>"${log}" 2>&1; then
+    if ! timeout "${PACKAGE_DEADLINE}" water package --platform linux --backend gtk4 --yes >>"${log}" 2>&1; then
         echo "FAIL ${name}: water package failed or exceeded ${PACKAGE_DEADLINE}s (see log)"
         return 1
     fi
