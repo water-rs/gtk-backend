@@ -28,6 +28,14 @@ use waterui_core::{Binding, Environment, Metadata};
 use crate::renderer::GtkRenderer;
 use crate::util::{store_watcher_guard, subscribe_then_get};
 
+/// The placement contract computes in `f32`, but GTK reports pixel extents as
+/// `i32`. Every extent crossing this boundary is a non-negative pixel count
+/// that fits a `u16` — the largest integer width `f32` holds exactly — so the
+/// checked conversion saturates instead of wrapping on absurd inputs.
+fn px(extent: i32) -> f32 {
+    f32::from(u16::try_from(extent).unwrap_or(if extent < 0 { 0 } else { u16::MAX }))
+}
+
 /// Renders `Metadata<AnchoredOverlay>`: the anchor view plus a `GtkPopover`
 /// that presents the overlay content while `is_presented` holds.
 pub(crate) fn render_anchored_overlay(
@@ -123,21 +131,19 @@ fn show_anchored_overlay(
         return;
     };
     let native = native.upcast::<Widget>();
-    let window_width = native.width() as f32;
-    let window_height = native.height() as f32;
-    if window_width <= 0.0 || window_height <= 0.0 {
+    let window_width = native.width();
+    let window_height = native.height();
+    if window_width <= 0 || window_height <= 0 {
         return;
     }
 
     // Contract step 1: the content's ideal size capped by the window.
     let (_, natural_width, ..) = overlay.measure(Orientation::Horizontal, -1);
-    let (_, natural_height, ..) = overlay.measure(
-        Orientation::Vertical,
-        natural_width.min(window_width as i32),
-    );
+    let (_, natural_height, ..) =
+        overlay.measure(Orientation::Vertical, natural_width.min(window_width));
     let overlay_size = Size::new(
-        (natural_width as f32).min(window_width),
-        (natural_height as f32).min(window_height),
+        px(natural_width.min(window_width)),
+        px(natural_height.min(window_height)),
     );
 
     let Some(anchor_origin) = anchor.compute_point(&native, &gtk4::graphene::Point::zero()) else {
@@ -145,9 +151,9 @@ fn show_anchored_overlay(
     };
     let anchor_frame = Rect::new(
         Point::new(anchor_origin.x(), anchor_origin.y()),
-        Size::new(anchor.width() as f32, anchor.height() as f32),
+        Size::new(px(anchor.width()), px(anchor.height())),
     );
-    let window_frame = Rect::from_size(Size::new(window_width, window_height));
+    let window_frame = Rect::from_size(Size::new(px(window_width), px(window_height)));
 
     let direction = layout_direction(env).snapshot();
     let placed = place_anchored_overlay(
@@ -181,12 +187,20 @@ fn show_anchored_overlay(
     popover.set_autohide(matches!(dismissal, Dismissal::OutsideInteraction));
     popover.set_child(Some(overlay));
     popover.set_parent(anchor);
-    popover.set_pointing_to(Some(&gdk4::Rectangle::new(
+    // `pointing_to` takes integral pixels in anchor coordinates; the attach
+    // point was computed in `f32` and is rounded to the nearest pixel, where
+    // the conversion is exact.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the attach point is rounded to an integral pixel coordinate"
+    )]
+    let pointing_rect = gdk4::Rectangle::new(
         pointing.x().round() as i32,
         pointing.y().round() as i32,
         0,
         0,
-    )));
+    );
+    popover.set_pointing_to(Some(&pointing_rect));
 
     // GTK's `autohide` dismisses on an outside press while the press still
     // reaches its target; the `closed` signal reports either path, so a
