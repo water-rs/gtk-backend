@@ -21,6 +21,7 @@ use waterui::component::progress::ProgressConfig;
 use waterui::cursor::{Cursor, CursorStyle};
 use waterui::drag_drop::{DragData, Draggable, DropDestination};
 use waterui::interaction::Hittable;
+use waterui::metadata::anchored_overlay::AnchoredOverlay;
 use waterui::metadata::context_menu::ResolvedContextMenu;
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 use waterui::prelude::Divider;
@@ -1309,6 +1310,12 @@ impl GtkRenderer {
                 widget.add_controller(click);
                 widget
             },
+        );
+
+        // Metadata<AnchoredOverlay> - binding-driven anchored popover
+        Self::register_transparent::<Metadata<AnchoredOverlay>>(
+            dispatcher,
+            crate::components::anchored_overlay::render_anchored_overlay,
         );
 
         // Metadata<Draggable> - native GTK drag source
