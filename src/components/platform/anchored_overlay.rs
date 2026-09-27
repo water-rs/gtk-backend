@@ -66,12 +66,9 @@ pub(crate) fn render_anchored_overlay(
         }
     };
 
-    let dismiss = {
-        let popover_state = popover_state.clone();
-        move || {
-            if let Some(popover) = popover_state.borrow_mut().take() {
-                popover.popdown();
-            }
+    let dismiss = move || {
+        if let Some(popover) = popover_state.borrow_mut().take() {
+            popover.popdown();
         }
     };
 
