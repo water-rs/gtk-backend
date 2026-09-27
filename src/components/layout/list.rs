@@ -180,7 +180,7 @@ impl GtkComponent for Native<ListConfig> {
         // Reconcile the GTK model by stable WaterUI row identity.
         let contents_guard = contents.watch(.., {
             let model = Rc::clone(&model);
-            move |context| {
+            move |context, _change| {
                 let ids = context
                     .value()
                     .iter()

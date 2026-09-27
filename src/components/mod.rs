@@ -18,5 +18,5 @@ pub use layout::{
 pub use nav::{menu, navigation, tabs};
 #[cfg(feature = "webview-system")]
 pub use platform::webview;
-pub use platform::{dynamic, system_icon};
+pub use platform::{anchored_overlay, dynamic, system_icon};
 pub use typography::text;

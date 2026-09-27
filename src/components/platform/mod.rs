@@ -1,5 +1,6 @@
 //! GTK widget implementations for platform-backed `WaterUI` components.
 
+pub mod anchored_overlay;
 pub mod dynamic;
 pub mod system_icon;
 #[cfg(feature = "webview-system")]

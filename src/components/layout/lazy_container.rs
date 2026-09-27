@@ -129,7 +129,7 @@ impl GtkComponent for Native<LazyContainer> {
         // Reconcile the GTK model by stable WaterUI child identity.
         let contents_guard = contents.watch(.., {
             let model = Rc::clone(&model);
-            move |context| {
+            move |context, _change| {
                 let ids = context
                     .value()
                     .iter()
@@ -226,7 +226,7 @@ fn render_fixed(
         let contents = contents.clone();
         let container = container.clone();
         let env = env.clone();
-        move |_| {
+        move |_, _| {
             let contents = contents.clone();
             let container = container.clone();
             let env = env.clone();
