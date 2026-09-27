@@ -10,6 +10,7 @@ pub(crate) mod gl_util;
 pub mod gpu_surface;
 pub mod gradient;
 pub mod picture;
+pub mod shadow_widget;
 pub mod shape;
 
 /// Converts a resolved path into the form GSK draws, fills and clips with.

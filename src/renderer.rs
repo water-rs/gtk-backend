@@ -369,7 +369,6 @@ impl RenderContext {
 
 const GTK_METADATA_CSS_PRIORITY: u32 = gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION;
 const CSS_CLASS_BORDER: &str = "waterui-metadata-border";
-const CSS_CLASS_SHADOW: &str = "waterui-metadata-shadow";
 const CSS_CLASS_SCALE: &str = "waterui-metadata-scale";
 const CSS_CLASS_ROTATION: &str = "waterui-metadata-rotation";
 const CSS_CLASS_OFFSET: &str = "waterui-metadata-offset";
@@ -409,13 +408,6 @@ fn cursor_style_to_gtk_name(style: CursorStyle) -> &'static str {
         CursorStyle::Copy => "copy",
         _ => panic!("unsupported CursorStyle variant on GTK backend"),
     }
-}
-
-fn apply_shadow_css(css: &ScopedCss, resolved: ResolvedColor, x: f32, y: f32, blur: f32) {
-    let color = crate::util::resolved_color_to_css_rgba(resolved);
-    css.set_declarations(&format!(
-        "box-shadow: {x:.2}px {y:.2}px {blur:.2}px {color};"
-    ));
 }
 
 fn apply_border_css(
@@ -957,37 +949,43 @@ impl GtkRenderer {
             widget
         });
 
-        // Metadata<Shadow> - apply CSS shadow to a wrapper
+        // Metadata<Shadow> - outset-shadow node of the silhouette
         Self::register_transparent::<Metadata<Shadow>>(dispatcher, |renderer, metadata, env| {
             let content = renderer.render_any(metadata.content, env);
-            let wrapper = wrap_for_metadata(&content);
-            let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_SHADOW);
             let shadow = metadata.value;
+            let to_rgba = |resolved| {
+                let (r, g, b, a) = crate::util::resolved_color_to_srgba_f64(resolved);
+                gdk4::RGBA::new(r as f32, g as f32, b as f32, a as f32)
+            };
             let color_signal = shadow.color.resolve(env);
+            let weak = Rc::new(RefCell::new(
+                None::<glib::WeakRef<crate::components::graphics::shadow_widget::WuiShadow>>,
+            ));
             let (initial, guard) = subscribe_then_get(&color_signal, {
-                let scoped_css = scoped_css.clone();
+                let weak = weak.clone();
                 move |ctx| {
                     let resolved = ctx.into_value();
-                    let scoped_css = scoped_css.clone();
+                    let weak = weak.clone();
                     glib::idle_add_local_once(move || {
-                        apply_shadow_css(
-                            &scoped_css,
-                            resolved,
-                            shadow.offset.x,
-                            shadow.offset.y,
-                            shadow.radius,
-                        );
+                        if let Some(shadow) =
+                            weak.borrow().as_ref().and_then(glib::WeakRef::upgrade)
+                        {
+                            shadow.set_color(to_rgba(resolved));
+                        }
                     });
                 }
             });
-            apply_shadow_css(
-                &scoped_css,
-                initial,
+            let wrapper = crate::components::graphics::shadow_widget::WuiShadow::new(
+                shadow.silhouette.kind(),
+                shadow.silhouette.commands(),
                 shadow.offset.x,
                 shadow.offset.y,
                 shadow.radius,
+                to_rgba(initial),
+                &content,
             );
-            store_watcher_guard(&wrapper, Box::new(guard));
+            *weak.borrow_mut() = Some(wrapper.downgrade());
+            store_watcher_guard(wrapper.upcast_ref(), Box::new(guard));
             wrapper.upcast()
         });
 
