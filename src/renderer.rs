@@ -543,9 +543,11 @@ fn install_gesture_observer(
             let action_for_handler = action.clone();
             click.connect_pressed(move |gesture, n_press, x, y| {
                 let Some(button) = gesture_pointer_button(gesture.current_button()) else {
+                    gesture.set_state(gtk4::EventSequenceState::Denied);
                     return;
                 };
                 if !buttons.accepts(button) {
+                    gesture.set_state(gtk4::EventSequenceState::Denied);
                     return;
                 }
                 if n_press as u32 >= required_count {
@@ -573,9 +575,11 @@ fn install_gesture_observer(
             let buttons = long_press.buttons;
             press.connect_pressed(move |gesture, x, y| {
                 let Some(button) = gesture_pointer_button(gesture.current_button()) else {
+                    gesture.set_state(gtk4::EventSequenceState::Denied);
                     return;
                 };
                 if !buttons.accepts(button) {
+                    gesture.set_state(gtk4::EventSequenceState::Denied);
                     return;
                 }
                 let event = LongPressEvent {
@@ -1950,5 +1954,145 @@ mod focus_tests {
         assert!(entry.grab_focus());
         wait_until(|| focus_inside(&window, &entry));
         assert!(binding.snapshot());
+    }
+}
+
+#[cfg(test)]
+mod gesture_button_tests {
+    //! A tap observer installs a capture-phase `GtkGestureSingle` whose
+    //! `buttons` mask must deny a press it does not accept, releasing the
+    //! sequence to the next controller in the chain. GTK4 exposes no public
+    //! button-event injection (`gdk4::ButtonEvent` is not constructible and
+    //! the `gtk_test_*` entry points are gone), so the press is a real XTEST
+    //! click delivered by `xdotool`; the windowed test group serializes tests
+    //! that share the display's pointer.
+
+    use std::cell::Cell;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    use glib::MainContext;
+    use waterui::gesture::{Gesture, PointerButtons, TapGesture};
+
+    use super::*;
+
+    fn init() {
+        gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
+    }
+
+    fn wait_until(mut condition: impl FnMut() -> bool) {
+        let context = MainContext::default();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !condition() {
+            assert!(Instant::now() < deadline, "timed out waiting for GTK state");
+            if !context.iteration(false) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    fn flag_action(flag: &Rc<Cell<bool>>) -> Rc<RefCell<BoxedAction<()>>> {
+        let flag = flag.clone();
+        Rc::new(RefCell::new(
+            Box::new(move |_: &Environment| flag.set(true)) as BoxedAction<()>,
+        ))
+    }
+
+    /// Sends `button`'s click to the center of the active window through
+    /// XTEST, so GTK dispatches a real button-press sequence.
+    fn click_active_window_center(button: u32) {
+        let output = Command::new("xdotool")
+            .args(["getactivewindow", "getwindowgeometry", "--shell"])
+            .output()
+            .expect("xdotool must be on PATH to synthesize pointer input");
+        assert!(
+            output.status.success(),
+            "xdotool could not resolve the active window"
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let field = |name: &str| -> i64 {
+            stdout
+                .lines()
+                .find_map(|line| line.strip_prefix(name).and_then(|v| v.trim().parse().ok()))
+                .unwrap_or_else(|| panic!("xdotool getwindowgeometry reported no {name}"))
+        };
+        let (x, y) = (
+            field("X=") + field("WIDTH=") / 2,
+            field("Y=") + field("HEIGHT=") / 2,
+        );
+        let activated = Command::new("xdotool")
+            .args(["getactivewindow", "windowactivate", "--sync"])
+            .status()
+            .expect("xdotool must be on PATH to synthesize pointer input");
+        assert!(activated.success(), "xdotool could not raise the window");
+        let status = Command::new("xdotool")
+            .args([
+                "mousemove",
+                &x.to_string(),
+                &y.to_string(),
+                "click",
+                &button.to_string(),
+            ])
+            .status()
+            .expect("xdotool must be on PATH to synthesize pointer input");
+        assert!(status.success(), "xdotool click failed");
+    }
+
+    /// A MIDDLE-only tap on the parent and the default PRIMARY tap on its
+    /// child are both capture-phase controllers. The parent's middle press
+    /// claims the sequence; a primary press must be denied there and reach
+    /// the child's controller — before the denial the parent's early return
+    /// left the sequence claimed and starved the child.
+    #[test]
+    fn denied_button_sequence_reaches_child_controller() {
+        init();
+        let parent = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        let child = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        child.set_hexpand(true);
+        child.set_vexpand(true);
+        parent.append(&child);
+
+        let parent_fired = Rc::new(Cell::new(false));
+        let child_fired = Rc::new(Cell::new(false));
+        install_gesture_observer(
+            parent.upcast_ref(),
+            Gesture::Tap(TapGesture::new().buttons(PointerButtons::MIDDLE)),
+            flag_action(&parent_fired),
+            Environment::new(),
+        );
+        install_gesture_observer(
+            child.upcast_ref(),
+            Gesture::Tap(TapGesture::new()),
+            flag_action(&child_fired),
+            Environment::new(),
+        );
+
+        let window = gtk4::Window::new();
+        window.set_default_size(300, 300);
+        window.set_child(Some(&parent));
+        window.present();
+        wait_until(|| window.is_mapped());
+        // Give the WM a beat to focus and place the toplevel before XTEST input.
+        std::thread::sleep(Duration::from_millis(500));
+        wait_until(|| {
+            parent
+                .compute_bounds(&window)
+                .is_some_and(|r| r.width() > 0.0)
+        });
+
+        click_active_window_center(2);
+        wait_until(|| parent_fired.get());
+        assert!(
+            !child_fired.get(),
+            "the claimed middle press must not reach the child"
+        );
+
+        parent_fired.set(false);
+        click_active_window_center(1);
+        wait_until(|| child_fired.get());
+        assert!(
+            !parent_fired.get(),
+            "the denied primary press must not fire the MIDDLE-only tap"
+        );
     }
 }

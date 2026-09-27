@@ -39,7 +39,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: ./.github/actions/setup-linux-deps
         with:
-          extra-packages: xvfb libgl1-mesa-dri openbox dbus-x11
+          extra-packages: xvfb libgl1-mesa-dri openbox dbus-x11 xdotool
       # The two matrix legs compile different feature sets into disjoint
       # artifacts; without a per-leg key they race to save under one key and
       # whichever lands second wins, leaving the other leg permanently cold.
