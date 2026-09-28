@@ -20,8 +20,10 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Orientation, Popover, PositionType, Widget};
 use nami::Signal;
-use waterui::metadata::anchored_overlay::{AnchorPlacement, AnchoredOverlay, Dismissal};
-use waterui_backend_core::overlay::{PhysicalEdge, place_anchored_overlay};
+use waterui::metadata::anchored_overlay::{
+    AnchorEdge, AnchorPlacement, AnchoredOverlay, Dismissal,
+};
+use waterui_backend_core::overlay::{PhysicalEdge, logical_edge, place_anchored_overlay};
 use waterui_core::layout::{Point, Rect, Size, layout_direction};
 use waterui_core::{Binding, Environment, Metadata};
 
@@ -51,6 +53,7 @@ pub(crate) fn render_anchored_overlay(
         is_presented,
         placement,
         dismissal,
+        placed_edge,
     } = metadata.value;
     let overlay = renderer.render_any(content, env);
 
@@ -68,6 +71,7 @@ pub(crate) fn render_anchored_overlay(
                 &is_presented,
                 placement,
                 dismissal,
+                &placed_edge,
                 &env,
                 &popover_state,
             );
@@ -121,6 +125,7 @@ fn show_anchored_overlay(
     is_presented: &Binding<bool>,
     placement: AnchorPlacement,
     dismissal: Dismissal,
+    placed_edge: &Binding<AnchorEdge>,
     env: &Environment,
     popover_state: &Rc<RefCell<Option<Popover>>>,
 ) {
@@ -163,6 +168,14 @@ fn show_anchored_overlay(
         placement,
         direction,
     );
+    // Report the edge the placement resolved to — `logical_edge` turns the
+    // physical result back under the layout direction. GTK then positions
+    // the popover exactly there through `pointing_to`, so the computed edge
+    // is the edge actually used.
+    let logical = logical_edge(placed.edge, direction);
+    if placed_edge.snapshot() != logical {
+        placed_edge.set(logical);
+    }
     let frame = placed.frame;
 
     // GTK attaches the popover's near edge to `pointing_to` and centres it on
