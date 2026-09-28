@@ -1,6 +1,7 @@
 //! View renderer that dispatches `WaterUI` views to GTK widgets.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use glib::object::ObjectExt;
@@ -10,6 +11,7 @@ use gtk4::Widget;
 use gtk4::glib::Propagation;
 use gtk4::prelude::*;
 use nami::Signal;
+use waterui::Url;
 use waterui::accessibility::{
     AccessibilityChecked, AccessibilityChildren, AccessibilityHidden, AccessibilityLabel,
     AccessibilityRole, AccessibilityState, AccessibilityStateSignal, AccessibilityValue,
@@ -20,7 +22,9 @@ use waterui::component::badge::BadgeConfig;
 use waterui::component::list::ListConfig;
 use waterui::component::progress::ProgressConfig;
 use waterui::cursor::{Cursor, CursorStyle};
-use waterui::drag_drop::{DragData, Draggable, DropDestination};
+use waterui::drag_drop::{
+    DragPayload, Draggable, DropDestination, Files, PlatformRepresentation, TransferKind,
+};
 use waterui::gesture::PointerButton;
 use waterui::interaction::Hittable;
 use waterui::metadata::anchored_overlay::AnchoredOverlay;
@@ -454,39 +458,173 @@ fn apply_offset_css(css: &ScopedCss, x: f32, y: f32) {
     css.set_declarations(&format!("transform: translate({x:.2}px, {y:.2}px);"));
 }
 
-fn drag_content_provider(data: &DragData) -> gdk4::ContentProvider {
-    let text = data.as_str().to_owned();
-    let text_provider = gdk4::ContentProvider::for_value(&text.to_value());
-    match data {
-        DragData::Text(_) => text_provider,
-        DragData::Url(_) => {
-            let uri_list = format!("{text}\r\n");
+/// MIME type an in-process drag puts on the wire. The value has no pasteboard
+/// form; the real payload lives in `DRAG_PAYLOADS` behind the `GdkDrag`, so the
+/// bytes only exist to give same-process drop targets a format to match.
+const IN_PROCESS_DRAG_MIME: &str = "application/x-waterui-in-process";
+
+thread_local! {
+    /// The typed payload behind each `DragSource` this process started, keyed
+    /// by its `GdkDrag`. GTK hands drop targets a value deserialized from MIME
+    /// data, which cannot carry an arbitrary `Transferable`; for a local drag
+    /// the destination takes the payload from here instead, so every
+    /// `TransferKind` — `InProcess` included — matches the destination's
+    /// accepted kind exactly.
+    static DRAG_PAYLOADS: RefCell<HashMap<gdk4::Drag, DragPayload>> =
+        RefCell::new(HashMap::new());
+}
+
+fn register_drag_payload(drag: &gdk4::Drag, payload: DragPayload) {
+    DRAG_PAYLOADS.with(|payloads| {
+        payloads.borrow_mut().insert(drag.clone(), payload);
+    });
+}
+
+fn unregister_drag_payload(drag: &gdk4::Drag) {
+    DRAG_PAYLOADS.with(|payloads| {
+        payloads.borrow_mut().remove(drag);
+    });
+}
+
+/// The typed payload a `DragSource` in this process attached to `drop`'s drag,
+/// if the drag is local and originated from a `WaterUI` source.
+fn local_drag_payload(drop: &gdk4::Drop) -> Option<DragPayload> {
+    let drag = drop.drag()?;
+    DRAG_PAYLOADS.with(|payloads| payloads.borrow().get(&drag).cloned())
+}
+
+fn drag_content_provider(payload: &DragPayload) -> gdk4::ContentProvider {
+    match payload.platform_representation() {
+        PlatformRepresentation::Text(text) => {
+            gdk4::ContentProvider::for_value(&text.to_string().to_value())
+        }
+        PlatformRepresentation::Url(url) => {
+            let text_provider = gdk4::ContentProvider::for_value(&url.to_string().to_value());
+            let uri_list = format!("{url}\r\n");
             let uri_provider = gdk4::ContentProvider::for_bytes(
                 "text/uri-list",
                 &glib::Bytes::from(uri_list.as_bytes()),
             );
             gdk4::ContentProvider::new_union(&[text_provider, uri_provider])
         }
-        _ => panic!("unsupported DragData variant on GTK backend"),
+        PlatformRepresentation::Files(files) => {
+            let mut uri_list = String::new();
+            for url in files.urls() {
+                uri_list.push_str(url.as_str());
+                uri_list.push_str("\r\n");
+            }
+            gdk4::ContentProvider::for_bytes(
+                "text/uri-list",
+                &glib::Bytes::from(uri_list.as_bytes()),
+            )
+        }
+        PlatformRepresentation::InProcess => {
+            gdk4::ContentProvider::for_bytes(IN_PROCESS_DRAG_MIME, &glib::Bytes::from_static(&[]))
+        }
     }
 }
 
-fn drag_data_from_text(text: String) -> DragData {
-    if text.starts_with("http://") || text.starts_with("https://") || text.starts_with("file://") {
-        DragData::url(text)
-    } else {
-        DragData::text(text)
+/// The MIME types a foreign drag offers that a destination of `kind` can turn
+/// into its payload. GTK only reports the drop's `DropTarget` `GTypes` through,
+/// so this list is the backend's half of that gate: a kind accepts a foreign
+/// drag exactly when the formats can deliver it.
+fn remote_drop_mime_matches(formats: &gdk4::ContentFormats, kind: TransferKind) -> bool {
+    const TEXT_MIMES: &[&str] = &[
+        "text/plain;charset=utf-8",
+        "text/plain",
+        "UTF8_STRING",
+        "STRING",
+        "TEXT",
+        "COMPOUND_TEXT",
+    ];
+    match kind {
+        TransferKind::Text => TEXT_MIMES
+            .iter()
+            .any(|mime| formats.contain_mime_type(mime)),
+        TransferKind::Url => {
+            formats.contain_mime_type("text/uri-list")
+                || TEXT_MIMES
+                    .iter()
+                    .any(|mime| formats.contain_mime_type(mime))
+        }
+        TransferKind::Files => formats.contain_mime_type("text/uri-list"),
+        // `InProcess` values never reach the pasteboard: a foreign drag can
+        // never produce one. Local drags are answered from `DRAG_PAYLOADS`.
+        TransferKind::InProcess(_) => false,
     }
 }
 
-fn drag_data_from_drop_value(value: &glib::Value) -> Option<DragData> {
+/// Whether the destination accepts this drop: exactly by payload kind when the
+/// drag is a local `WaterUI` one (its typed payload is registered by `GdkDrag`),
+/// and by MIME offer for a foreign drag.
+fn drop_destination_accepts(drop: &gdk4::Drop, destination: &DropDestination) -> bool {
+    local_drag_payload(drop).map_or_else(
+        || remote_drop_mime_matches(&drop.formats(), destination.accepted_kind()),
+        |payload| destination.accepts(&payload),
+    )
+}
+
+fn drop_value_string(value: &glib::Value) -> Option<String> {
     if let Ok(text) = value.get::<String>() {
-        return Some(drag_data_from_text(text));
+        return Some(text);
     }
     if let Ok(text) = value.get::<glib::GString>() {
-        return Some(drag_data_from_text(text.to_string()));
+        return Some(text.to_string());
     }
     None
+}
+
+fn drop_value_urls(value: &glib::Value) -> Option<Vec<Url>> {
+    let files = value.get::<gdk4::FileList>().ok()?;
+    Some(
+        files
+            .files()
+            .iter()
+            .filter_map(|file| file.uri().parse::<Url>().ok())
+            .collect(),
+    )
+}
+
+/// Builds the payload a foreign drop delivers to a destination accepting
+/// `kind`, from the value GTK deserialized. Returns `None` when the value
+/// cannot carry that kind — the destination is then not delivered to.
+fn payload_from_drop_value(value: &glib::Value, kind: TransferKind) -> Option<DragPayload> {
+    match kind {
+        TransferKind::Text => {
+            drop_value_string(value).map(|text| DragPayload::new(Str::from(text)))
+        }
+        TransferKind::Url => {
+            let url = drop_value_urls(value)
+                .and_then(|urls| urls.into_iter().next())
+                .or_else(|| {
+                    drop_value_string(value)
+                        .and_then(|text| text.parse::<Url>().ok())
+                        .filter(Url::is_absolute)
+                })?;
+            Some(DragPayload::new(url))
+        }
+        TransferKind::Files => {
+            let urls = drop_value_urls(value).or_else(|| {
+                drop_value_string(value).map(|text| {
+                    text.lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                        .filter_map(|line| line.parse::<Url>().ok())
+                        .collect()
+                })
+            })?;
+            // `Files` is a list of `file://` URLs; a foreign drop cannot be
+            // inspected before it lands, so non-file entries are dropped here.
+            let urls: Vec<Url> = urls
+                .into_iter()
+                .filter(|url| url.is_absolute() && url.scheme() == Some("file"))
+                .collect();
+            (!urls.is_empty()).then(|| DragPayload::new(Files::new(urls)))
+        }
+        // `InProcess` payloads are delivered from `DRAG_PAYLOADS`, never from
+        // a deserialized value.
+        TransferKind::InProcess(_) => None,
+    }
 }
 
 fn call_boxed_action(action: &Rc<RefCell<BoxedAction<()>>>, env: &Environment) {
@@ -1422,13 +1560,30 @@ impl GtkRenderer {
         Self::register_transparent::<Metadata<Draggable>>(dispatcher, |renderer, metadata, env| {
             let widget = renderer.render_any(metadata.content, env);
             widget.set_can_target(true);
-            let data = metadata.value.data;
+            let draggable = Rc::new(metadata.value);
+            // `prepare` and `drag_begin` are separate signals; the payload is
+            // snapshotted once in `prepare` so the pasteboard content and the
+            // registered typed payload agree.
+            let prepared = Rc::new(RefCell::new(None::<DragPayload>));
             let source = gtk4::DragSource::new();
             source.set_actions(gdk4::DragAction::COPY);
-            source.connect_prepare(move |_, _, _| {
-                let payload = data.snapshot();
-                Some(drag_content_provider(&payload))
+            source.connect_prepare({
+                let draggable = draggable.clone();
+                let prepared = prepared.clone();
+                move |_, _, _| {
+                    let payload = draggable.payload();
+                    *prepared.borrow_mut() = Some(payload.clone());
+                    Some(drag_content_provider(&payload))
+                }
             });
+            source.connect_drag_begin(move |_, drag| {
+                let payload = prepared
+                    .borrow_mut()
+                    .take()
+                    .unwrap_or_else(|| draggable.payload());
+                register_drag_payload(drag, payload);
+            });
+            source.connect_drag_end(|_, drag, _| unregister_drag_payload(drag));
             widget.add_controller(source);
             widget
         });
@@ -1439,60 +1594,167 @@ impl GtkRenderer {
             |renderer, metadata, env| {
                 let widget = renderer.render_any(metadata.content, env);
                 widget.set_can_target(true);
-                let drop = Rc::new(RefCell::new(metadata.value.on_drop));
-                let enter = metadata
-                    .value
-                    .on_enter
-                    .map(|handler| Rc::new(RefCell::new(handler)));
-                let exit = metadata
-                    .value
-                    .on_exit
-                    .map(|handler| Rc::new(RefCell::new(handler)));
-                let target = gtk4::DropTarget::new(
-                    String::static_type(),
-                    gdk4::DragAction::COPY | gdk4::DragAction::MOVE,
-                );
-                target.set_types(&[String::static_type(), glib::GString::static_type()]);
-                target.connect_enter({
-                    let env = env.clone();
-                    let enter = enter.clone();
-                    move |_, _, _| {
-                        if let Some(handler) = &enter
-                            && let Ok(mut handler) = handler.try_borrow_mut()
-                        {
-                            (**handler)(&env);
+                let destination = Rc::new(RefCell::new(metadata.value));
+                // `enter`/`exit` fire only while an accepted drag is inside.
+                let hovered = Rc::new(Cell::new(false));
+                let kind = destination.borrow().accepted_kind();
+                if kind.is_platform() {
+                    // The GTypes gate the drop's formats: `String`/`GString`
+                    // reach text mimes, `FileList` `text/uri-list`. `Url`
+                    // destinations take `FileList` too so a file drop delivers
+                    // its `file://` URL.
+                    let gtypes: &[glib::Type] = match kind {
+                        TransferKind::Files => &[
+                            gdk4::FileList::static_type(),
+                            String::static_type(),
+                            glib::GString::static_type(),
+                        ],
+                        TransferKind::Url => &[
+                            String::static_type(),
+                            glib::GString::static_type(),
+                            gdk4::FileList::static_type(),
+                        ],
+                        _ => &[String::static_type(), glib::GString::static_type()],
+                    };
+                    let target = gtk4::DropTarget::new(
+                        gtypes[0],
+                        gdk4::DragAction::COPY | gdk4::DragAction::MOVE,
+                    );
+                    target.set_types(gtypes);
+                    target.connect_enter({
+                        let destination = destination.clone();
+                        let hovered = hovered.clone();
+                        let env = env.clone();
+                        move |target, _, _| {
+                            let accepts = target.current_drop().is_some_and(|drop| {
+                                drop_destination_accepts(&drop, &destination.borrow())
+                            });
+                            if accepts {
+                                hovered.set(true);
+                                if let Ok(mut destination) = destination.try_borrow_mut() {
+                                    destination.enter(&env);
+                                }
+                                gdk4::DragAction::COPY
+                            } else {
+                                gdk4::DragAction::empty()
+                            }
                         }
-                        gdk4::DragAction::COPY
-                    }
-                });
-                target.connect_leave({
-                    let env = env.clone();
-                    let exit = exit.clone();
-                    move |_| {
-                        if let Some(handler) = &exit
-                            && let Ok(mut handler) = handler.try_borrow_mut()
-                        {
-                            (**handler)(&env);
+                    });
+                    target.connect_leave({
+                        let destination = destination.clone();
+                        let hovered = hovered.clone();
+                        let env = env.clone();
+                        move |_| {
+                            if hovered.replace(false)
+                                && let Ok(mut destination) = destination.try_borrow_mut()
+                            {
+                                destination.exit(&env);
+                            }
                         }
-                    }
-                });
-                target.connect_drop({
-                    let env = env.clone();
-                    let drop = drop.clone();
-                    move |_, value, _, _| {
-                        let Some(data) = drag_data_from_drop_value(value) else {
-                            return false;
-                        };
-                        let mut local_env = env.clone();
-                        local_env.insert(data);
-                        if let Ok(mut handler) = drop.try_borrow_mut() {
-                            (**handler)(&local_env);
-                            return true;
+                    });
+                    target.connect_drop({
+                        let env = env.clone();
+                        move |target, value, _, _| {
+                            hovered.set(false);
+                            let Ok(mut destination) = destination.try_borrow_mut() else {
+                                return false;
+                            };
+                            if let Some(drop) = target.current_drop()
+                                && let Some(payload) = local_drag_payload(&drop)
+                            {
+                                if destination.accepts(&payload) {
+                                    destination.deliver(payload, &env);
+                                    return true;
+                                }
+                                return false;
+                            }
+                            let kind = destination.accepted_kind();
+                            let Some(payload) = payload_from_drop_value(value, kind) else {
+                                return false;
+                            };
+                            destination.deliver(payload, &env);
+                            true
                         }
-                        false
-                    }
-                });
-                widget.add_controller(target);
+                    });
+                    widget.add_controller(target);
+                } else {
+                    // `InProcess` kinds have no pasteboard form, so the target
+                    // watches the private MIME the source writes and the
+                    // payload is looked up by `GdkDrag` — it can never arrive
+                    // from another process.
+                    let target = gtk4::DropTargetAsync::new(
+                        Some(gdk4::ContentFormats::new(&[IN_PROCESS_DRAG_MIME])),
+                        gdk4::DragAction::COPY | gdk4::DragAction::MOVE,
+                    );
+                    target.connect_accept({
+                        let destination = destination.clone();
+                        move |_, drop| {
+                            local_drag_payload(drop)
+                                .is_some_and(|payload| destination.borrow().accepts(&payload))
+                        }
+                    });
+                    target.connect_drag_enter({
+                        let destination = destination.clone();
+                        let hovered = hovered.clone();
+                        let env = env.clone();
+                        move |_, drop, _, _| {
+                            let accepts = local_drag_payload(drop)
+                                .is_some_and(|payload| destination.borrow().accepts(&payload));
+                            if accepts {
+                                hovered.set(true);
+                                if let Ok(mut destination) = destination.try_borrow_mut() {
+                                    destination.enter(&env);
+                                }
+                                gdk4::DragAction::COPY
+                            } else {
+                                gdk4::DragAction::empty()
+                            }
+                        }
+                    });
+                    target.connect_drag_motion({
+                        let destination = destination.clone();
+                        move |_, drop, _, _| {
+                            if local_drag_payload(drop)
+                                .is_some_and(|payload| destination.borrow().accepts(&payload))
+                            {
+                                gdk4::DragAction::COPY
+                            } else {
+                                gdk4::DragAction::empty()
+                            }
+                        }
+                    });
+                    target.connect_drag_leave({
+                        let destination = destination.clone();
+                        let hovered = hovered.clone();
+                        let env = env.clone();
+                        move |_, _| {
+                            if hovered.replace(false)
+                                && let Ok(mut destination) = destination.try_borrow_mut()
+                            {
+                                destination.exit(&env);
+                            }
+                        }
+                    });
+                    target.connect_drop({
+                        let env = env.clone();
+                        move |_, drop, _, _| {
+                            hovered.set(false);
+                            let Ok(mut destination) = destination.try_borrow_mut() else {
+                                return false;
+                            };
+                            let Some(payload) = local_drag_payload(drop) else {
+                                return false;
+                            };
+                            if !destination.accepts(&payload) {
+                                return false;
+                            }
+                            destination.deliver(payload, &env);
+                            drop.finish(gdk4::DragAction::COPY);
+                            true
+                        }
+                    });
+                    widget.add_controller(target);
+                }
                 widget
             },
         );
