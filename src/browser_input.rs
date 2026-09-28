@@ -192,7 +192,7 @@ fn surface_key_event(
     }
 }
 
-fn surface_modifiers(modifiers: ModifierType) -> Modifiers {
+pub fn surface_modifiers(modifiers: ModifierType) -> Modifiers {
     let mut result = Modifiers::empty();
     result.set(
         Modifiers::SHIFT,
@@ -234,7 +234,7 @@ fn surface_pointer_button(button: u32) -> SurfacePointerButton {
 ///
 /// GTK reports the XKB keycode, and Chromium's own keycode table names the same
 /// physical key in the W3C vocabulary the surface events carry.
-fn surface_code(keycode: u32) -> Code {
+pub fn surface_code(keycode: u32) -> Code {
     let Ok(keycode) = u16::try_from(keycode) else {
         return Code::Unidentified;
     };
@@ -250,7 +250,7 @@ fn surface_code(keycode: u32) -> Code {
 ///
 /// A keyval that types something is that character; the rest are named, and GDK
 /// names them after their X11 keysyms.
-fn surface_key(keyval: GdkKey) -> Key {
+pub fn surface_key(keyval: GdkKey) -> Key {
     if let Some(character) = keyval.to_unicode()
         && !character.is_control()
     {
@@ -267,7 +267,7 @@ fn surface_key(keyval: GdkKey) -> Key {
 /// Most keys are spelled the same in both vocabularies, so only the ones that
 /// differ are listed; everything else — the function keys, `Home`, `End`,
 /// `Insert`, `Delete`, `Escape` — is handed to `NamedKey`'s own parser as is.
-fn named_key(name: &str) -> Option<NamedKey> {
+pub fn named_key(name: &str) -> Option<NamedKey> {
     let w3c = match name {
         "BackSpace" => "Backspace",
         "Return" | "KP_Enter" | "ISO_Enter" => "Enter",
