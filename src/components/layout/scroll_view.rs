@@ -47,6 +47,10 @@ fn apply_scroll_target(scrolled_window: &gtk4::ScrolledWindow, axis: Axis, targe
 
 /// `ScrollView::report_offset`: the adjustments' values are the content
 /// offset in points.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "GTK adjustment values are f64 while WaterUI's offset point is f32"
+)]
 fn report_offset(scrolled_window: &gtk4::ScrolledWindow, offset: &Binding<Point>) {
     offset.set(Point::new(
         scrolled_window.hadjustment().value() as f32,
@@ -110,23 +114,29 @@ impl GtkComponent for Native<ScrollView> {
             let requested = Rc::new(Cell::new(None::<Point>));
             for adjustment in [scrolled_window.hadjustment(), scrolled_window.vadjustment()] {
                 let requested = Rc::clone(&requested);
-                let scrolled_window = scrolled_window.clone();
+                // The adjustment owns the closure while the closure would own
+                // the window — a weak reference keeps the widget finalizable.
+                let scrolled_window = scrolled_window.downgrade();
                 adjustment.connect_changed(move |_| {
-                    if let Some(target) = requested.get() {
+                    if let (Some(scrolled_window), Some(target)) =
+                        (scrolled_window.upgrade(), requested.get())
+                    {
                         apply_scroll_target(&scrolled_window, axis, target);
                     }
                 });
             }
             let generation = controller.generation();
             let target = controller.target();
-            let scrolled_for_watch = scrolled_window.clone();
+            let scrolled_for_watch = scrolled_window.downgrade();
             let requested_for_watch = Rc::clone(&requested);
             let guard = generation.watch(move |_| {
                 let target = target.snapshot();
                 requested_for_watch.set(Some(target));
                 let scrolled_window = scrolled_for_watch.clone();
                 glib::idle_add_local_once(move || {
-                    apply_scroll_target(&scrolled_window, axis, target);
+                    if let Some(scrolled_window) = scrolled_window.upgrade() {
+                        apply_scroll_target(&scrolled_window, axis, target);
+                    }
                 });
             });
             store_watcher_guard(&scrolled_window, Box::new(guard));
@@ -136,10 +146,12 @@ impl GtkComponent for Native<ScrollView> {
         // controller request above.
         if let Some(offset) = offset {
             for adjustment in [scrolled_window.hadjustment(), scrolled_window.vadjustment()] {
-                let scrolled_window = scrolled_window.clone();
+                let scrolled_window = scrolled_window.downgrade();
                 let offset = offset.clone();
                 adjustment.connect_value_changed(move |_| {
-                    report_offset(&scrolled_window, &offset);
+                    if let Some(scrolled_window) = scrolled_window.upgrade() {
+                        report_offset(&scrolled_window, &offset);
+                    }
                 });
             }
             report_offset(&scrolled_window, &offset);
