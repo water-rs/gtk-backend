@@ -11,7 +11,7 @@ use executor_core::{
 use gtk4::Application;
 use gtk4::prelude::*;
 use native_executor::NativeExecutor;
-use waterui::app::App;
+use waterui::app::{App, AppParts, LastWindowPolicy};
 use waterui_core::{Environment, View};
 
 use crate::renderer::GtkRenderer;
@@ -210,36 +210,50 @@ impl GtkApp {
 
     /// Runs a `WaterUI` `App` as a GTK application.
     ///
-    /// This extracts the main window's content and environment from the App
-    /// and renders it using GTK.
+    /// The app's first window is rendered with GTK; an app may declare none.
+    /// The app's [`LastWindowPolicy`] decides what happens once no window is
+    /// open: under [`LastWindowPolicy::Quit`] the application ends with its
+    /// last window, and at startup when it declares none; under
+    /// [`LastWindowPolicy::StayResident`] it holds the GTK application for as
+    /// long as it runs.
     ///
     /// # Panics
     ///
-    /// Panics if the app has no windows, or if the GPU runtime cannot be created.
+    /// Panics if the GPU runtime cannot be created.
     #[must_use = "the returned value is the process exit status"]
     pub fn run_app(self, waterui_app: App) -> i32 {
-        let (windows, _menu_bar, env) = waterui_app.into_parts();
+        let AppParts {
+            windows,
+            env,
+            last_window,
+            ..
+        } = waterui_app.into_parts();
         let mut env = env;
         // GTK draws text with Pango and owns no `parley` collection, so a
         // component that typesets text itself gets the system's fonts here,
         // once for the application rather than once per view.
         waterui_text::install_system_font_collection(&mut env);
-        let main_window = windows
-            .into_iter()
-            .next()
-            .expect("GtkApp::run_app requires at least one window");
-        let title = main_window.display_title();
-        let background = main_window.background.clone();
-        let content = main_window.content;
+        let main_window = windows.into_iter().next();
         #[cfg(feature = "webview-system")]
         ensure_webview_controller(&mut env);
 
+        // GTK ends the application once nothing holds it — no window, no
+        // hold — which is exactly `Quit`, at startup included. Staying
+        // resident is one hold for as long as the application runs.
+        let _resident = match last_window {
+            LastWindowPolicy::Quit => None,
+            LastWindowPolicy::StayResident => Some(self.app.hold()),
+        };
+
         self.app.connect_activate(move |app| {
             let inspector = init_main_thread_executors();
+            let Some(main_window) = &main_window else {
+                return;
+            };
             let app = app.clone();
-            let content = content.build();
-            let title = title.clone();
-            let background = background.clone();
+            let content = main_window.content.build();
+            let title = main_window.display_title();
+            let background = main_window.background.clone();
             let mut env = env.clone();
             waterui::inspector::install(&mut env, inspector);
             // See the `hold` rationale in `run`: the window takes over the
