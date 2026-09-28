@@ -5,10 +5,10 @@ use std::rc::Rc;
 
 use gtk4::Widget;
 use gtk4::prelude::*;
-use nami::Signal;
+use nami::{Binding, Signal};
 use waterui_core::layout::Point;
 use waterui_core::{Environment, Native};
-use waterui_layout::scroll::{Axis, ScrollView};
+use waterui_layout::scroll::{Axis, ScrollView, ScrollViewParts};
 
 use crate::component::GtkComponent;
 use crate::layout::proposal::set_scroll_axes;
@@ -45,10 +45,25 @@ fn apply_scroll_target(scrolled_window: &gtk4::ScrolledWindow, axis: Axis, targe
     }
 }
 
+/// `ScrollView::report_offset`: the adjustments' values are the content
+/// offset in points.
+fn report_offset(scrolled_window: &gtk4::ScrolledWindow, offset: &Binding<Point>) {
+    offset.set(Point::new(
+        scrolled_window.hadjustment().value() as f32,
+        scrolled_window.vadjustment().value() as f32,
+    ));
+}
+
 impl GtkComponent for Native<ScrollView> {
     /// Renders a `WaterUI` `ScrollView` as a GTK4 `ScrolledWindow`.
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
-        let (axis, content, controller) = self.into_inner().into_inner();
+        let ScrollViewParts {
+            axis,
+            content,
+            controller,
+            offset,
+            ..
+        } = self.into_inner().into_inner();
 
         // Create the ScrolledWindow
         let scrolled_window = gtk4::ScrolledWindow::new();
@@ -115,6 +130,19 @@ impl GtkComponent for Native<ScrollView> {
                 });
             });
             store_watcher_guard(&scrolled_window, Box::new(guard));
+        }
+
+        // `value-changed` fires on every scroll, whether from the user or a
+        // controller request above.
+        if let Some(offset) = offset {
+            for adjustment in [scrolled_window.hadjustment(), scrolled_window.vadjustment()] {
+                let scrolled_window = scrolled_window.clone();
+                let offset = offset.clone();
+                adjustment.connect_value_changed(move |_| {
+                    report_offset(&scrolled_window, &offset);
+                });
+            }
+            report_offset(&scrolled_window, &offset);
         }
 
         scrolled_window.upcast()
