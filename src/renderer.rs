@@ -7,6 +7,7 @@ use glib::object::ObjectExt;
 use glib::value::ToValue;
 use gtk4::Align;
 use gtk4::Widget;
+use gtk4::glib::Propagation;
 use gtk4::prelude::*;
 use nami::Signal;
 use waterui::accessibility::{
@@ -38,6 +39,7 @@ use waterui_core::Binding;
 use waterui_core::dynamic::Dynamic;
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::handler::BoxedAction;
+use waterui_core::key::{KeyHandling, KeyPress, OnKeyPress};
 use waterui_core::layout::{LayoutPriority, StretchAxis};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{AnyView, Environment, Native, View};
@@ -67,6 +69,7 @@ use waterui_text::TextConfig;
 #[cfg(feature = "webview-system")]
 use waterui_webview::WebView;
 
+use crate::browser_input;
 use crate::component::GtkComponent;
 use crate::components::graphics::clip_shape_widget::WuiClipShape;
 use crate::components::menu::rebuild_menu_popover;
@@ -1326,6 +1329,39 @@ impl GtkRenderer {
             widget.add_controller(motion);
             widget
         });
+
+        // Metadata<OnKeyPress> - claim unconsumed keys as they bubble up
+        Self::register_transparent::<Metadata<OnKeyPress>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let widget = renderer.render_any(metadata.content, env);
+                let handler = Rc::new(RefCell::new(metadata.value));
+                let env = env.clone();
+                let keys = gtk4::EventControllerKey::new();
+                // Bubble phase: the controller sees a key press only after the
+                // focused descendant left it unconsumed, and each ancestor
+                // handles it nearest-first as the event climbs toward the
+                // toplevel. Stopping propagation ends the bubble.
+                keys.set_propagation_phase(gtk4::PropagationPhase::Bubble);
+                keys.connect_key_pressed(move |_, keyval, keycode, state| {
+                    let press = KeyPress {
+                        key: browser_input::surface_key(keyval),
+                        code: browser_input::surface_code(keycode),
+                        modifiers: browser_input::surface_modifiers(state),
+                        // GDK's key controller does not report auto-repeat.
+                        repeat: false,
+                    };
+                    if let Ok(mut handler) = handler.try_borrow_mut()
+                        && handler.handle(&env.extending(press)) == KeyHandling::Handled
+                    {
+                        return Propagation::Stop;
+                    }
+                    Propagation::Proceed
+                });
+                widget.add_controller(keys);
+                widget
+            },
+        );
 
         // Metadata<GestureObserver> - attach gesture recognizers
         Self::register_transparent::<Metadata<GestureObserver>>(

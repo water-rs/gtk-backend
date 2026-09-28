@@ -97,6 +97,16 @@ impl GtkComponent for Native<ResolvedTextFieldConfig> {
             }
         });
 
+        // GtkEntry emits `activate` on Return; run `on_submit` when one is
+        // installed. With no `on_submit` the activation is GTK's platform
+        // default for a Return nothing handles.
+        if let Some(on_submit) = config.on_submit {
+            let env = env.clone();
+            entry.connect_activate(move |_| {
+                on_submit.call(&env);
+            });
+        }
+
         container.append(&entry);
 
         // Store watcher guards
