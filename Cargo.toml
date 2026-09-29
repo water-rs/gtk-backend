@@ -73,31 +73,31 @@ libloading = "0.9"
 # Publishing ignores this table; it drops once the fix is on the registry.
 [patch.crates-io]
 waterui-image = { git = "https://github.com/water-rs/image", rev = "324c75acb1228808fe3facb7a4b2ce7a18748610" }
-waterui = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-assets = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-assets-core = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-assets-macros = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-assets-planner = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-backend-core = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-controls = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-core = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-dylib = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-form = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-graphics = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-icon = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-internal = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-layout = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-locale = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-macros = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-media = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-navigation = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-shape = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-text = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-url = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-video = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-watcher-set = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
-waterui-webview = { git = "https://github.com/water-rs/waterui", rev = "ec7d5ad2022f3b3cadf149d372adb18a3f4da74a" }
+waterui = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-assets = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-assets-core = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-assets-macros = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-assets-planner = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-backend-core = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-controls = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-core = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-dylib = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-form = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-graphics = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-icon = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-internal = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-layout = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-locale = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-macros = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-media = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-navigation = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-shape = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-text = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-url = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-video = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-watcher-set = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
+waterui-webview = { git = "https://github.com/water-rs/waterui", rev = "7c6076ad8e6c83bce906873b8c575fa4559ed668" }
 # nami#26 renames `Signal::get` to `snapshot` and removes the inherent
 # `Binding::get`; the pinned waterui rev rides it. Both nami crates this
 # graph names share the rev so a single `Signal` trait resolves; drop once a
