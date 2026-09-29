@@ -233,7 +233,81 @@ impl GtkApp {
         // component that typesets text itself gets the system's fonts here,
         // once for the application rather than once per view.
         waterui_text::install_system_font_collection(&mut env);
-        let main_window = windows.into_iter().next();
+        // Mounts one WaterUI `Window` as a GTK `ApplicationWindow`, pulling
+        // the parts the mount needs out of the window's own record — every
+        // path that shows a window (the app's declared windows, windows
+        // opened later through the `WindowManager`, a window shown again
+        // after closing) lands here, so `placement` and `activation`
+        // resolve fresh on every show.
+        let mount_window = std::rc::Rc::new({
+            let app = self.app.clone();
+            move |window: &waterui::window::Window, mut env: Environment| {
+                let app = app.clone();
+                let content = window.content.build();
+                let title = window.display_title();
+                let background = window.background.clone();
+                // `WindowPlacement` is not `Clone` (it owns `Rc<dyn Fn>`),
+                // but the record stays the owner — the mount clones the
+                // shareable `place` handle and the copyable selector.
+                let placement =
+                    window
+                        .placement
+                        .as_ref()
+                        .map(|placement| waterui::window::WindowPlacement {
+                            monitor: placement.monitor,
+                            place: std::rc::Rc::clone(&placement.place),
+                        });
+                let activation = window.activation;
+                // See the `hold` rationale in `run`: the window takes over
+                // the application reference once it is presented.
+                let hold = app.hold();
+                spawn_local(async move {
+                    let runtime = waterui_graphics::GpuRuntime::new()
+                        .await
+                        .unwrap_or_else(|error| panic!("GTK GPU runtime creation failed: {error}"));
+                    env.insert(runtime);
+                    let gtk_window = create_window(&app, "", 800, 600);
+                    crate::theme::install(&mut env, gtk_window.upcast_ref());
+                    install_inspect_gesture(&gtk_window, &env);
+                    apply_window_background(&gtk_window, &background, &env);
+                    // Placement resolves its selector now — mount time —
+                    // and only its size applies: GTK4 gives toplevels no
+                    // position API.
+                    if let Some(placement) = placement.as_ref() {
+                        crate::window::apply_window_placement(&gtk_window, placement, &app);
+                    }
+                    crate::window::apply_window_activation(&gtk_window, activation);
+
+                    let (initial_title, title_guard) = subscribe_then_get(&title, {
+                        let gtk_window = gtk_window.clone();
+                        move |ctx| {
+                            let title_text = ctx.into_value().as_str().to_owned();
+                            let gtk_window = gtk_window.clone();
+                            glib::idle_add_local_once(move || {
+                                gtk_window.set_title(Some(&title_text));
+                            });
+                        }
+                    });
+                    gtk_window.set_title(Some(initial_title.as_str()));
+                    store_watcher_guards(&gtk_window, vec![title_guard]);
+
+                    let mut renderer = GtkRenderer::new();
+                    let widget = renderer.render_any(content, &env);
+                    gtk_window.set_child(Some(&widget));
+                    gtk_window.present();
+                    drop(hold);
+                })
+                .detach();
+            }
+        });
+        // Windows shown after startup — `conditional_window` cycles, second
+        // windows — arrive through the `WindowManager` hook the view tree
+        // calls `Window::show` on.
+        let manager_env = env.clone();
+        env.insert(waterui::window::WindowManager::new({
+            let mount_window = std::rc::Rc::clone(&mount_window);
+            move |window| mount_window(&window, manager_env.clone())
+        }));
         #[cfg(feature = "webview-system")]
         ensure_webview_controller(&mut env);
 
@@ -247,48 +321,17 @@ impl GtkApp {
 
         self.app.connect_activate(move |app| {
             let inspector = init_main_thread_executors();
-            let Some(main_window) = &main_window else {
+            let _ = app;
+            if windows.is_empty() {
                 return;
-            };
-            let app = app.clone();
-            let content = main_window.content.build();
-            let title = main_window.display_title();
-            let background = main_window.background.clone();
+            }
             let mut env = env.clone();
             waterui::inspector::install(&mut env, inspector);
-            // See the `hold` rationale in `run`: the window takes over the
-            // application reference once it is presented.
-            let hold = app.hold();
-            spawn_local(async move {
-                let runtime = waterui_graphics::GpuRuntime::new()
-                    .await
-                    .unwrap_or_else(|error| panic!("GTK GPU runtime creation failed: {error}"));
-                env.insert(runtime);
-                let window = create_window(&app, "", 800, 600);
-                crate::theme::install(&mut env, window.upcast_ref());
-                install_inspect_gesture(&window, &env);
-                apply_window_background(&window, &background, &env);
-
-                let (initial_title, title_guard) = subscribe_then_get(&title, {
-                    let window = window.clone();
-                    move |ctx| {
-                        let title_text = ctx.into_value().as_str().to_owned();
-                        let window = window.clone();
-                        glib::idle_add_local_once(move || {
-                            window.set_title(Some(&title_text));
-                        });
-                    }
-                });
-                window.set_title(Some(initial_title.as_str()));
-                store_watcher_guards(&window, vec![title_guard]);
-
-                let mut renderer = GtkRenderer::new();
-                let widget = renderer.render_any(content, &env);
-                window.set_child(Some(&widget));
-                window.present();
-                drop(hold);
-            })
-            .detach();
+            // Every declared window mounts here; each one's own `placement`
+            // and `activation` apply on its own mount.
+            for window in &windows {
+                mount_window(window, env.clone());
+            }
         });
 
         self.app.run().into()
