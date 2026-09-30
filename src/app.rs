@@ -260,6 +260,7 @@ impl GtkApp {
                             place: std::rc::Rc::clone(&placement.place),
                         });
                 let activation = window.activation;
+                crate::window::check_window_output(window.present_mode, window.color_space);
                 // See the `hold` rationale in `run`: the window takes over
                 // the application reference once it is presented.
                 let hold = app.hold();

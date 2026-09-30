@@ -3,7 +3,7 @@
 use gtk4::{Application, ApplicationWindow};
 use nami::{Binding, Computed, Signal};
 use num_traits::ToPrimitive as _;
-use waterui::window::WindowStyle;
+use waterui::window::{PresentMode, WindowColorRange, WindowColorSpace, WindowStyle};
 use waterui_core::Environment;
 use waterui_graphics::color::ResolvedColor;
 use waterui_graphics::peniko::ImageData;
@@ -735,6 +735,31 @@ pub fn apply_window_style(window: &ApplicationWindow, style: &Binding<WindowStyl
 
 const fn style_is_decorated(style: WindowStyle) -> bool {
     !matches!(style, WindowStyle::Borderless)
+}
+
+/// Checks the window's creation-time output requests against what GTK can do.
+///
+/// GTK4 presents every window in step with the compositor and negotiates a
+/// window's colour with it, taking no request for either. A preferred colour
+/// range leaves that negotiation in place; unsynchronized presentation, or a
+/// required range beyond standard, cannot be honoured and is an error.
+///
+/// # Panics
+///
+/// Panics when the window asks for either of those.
+pub fn check_window_output(present_mode: PresentMode, color_space: Option<WindowColorSpace>) {
+    assert!(
+        present_mode == PresentMode::DisplaySynchronized,
+        "GTK cannot present a window unsynchronized from the display: GTK4 has no per-window \
+         presentation control"
+    );
+    if let Some(WindowColorSpace::Required(range)) = color_space {
+        assert!(
+            range == WindowColorRange::Standard,
+            "GTK cannot guarantee {range:?} window output: GTK4 negotiates a window's colour \
+             with the compositor and takes no request"
+        );
+    }
 }
 
 /// Applies the window's own reactive icon and keeps applying its changes.
