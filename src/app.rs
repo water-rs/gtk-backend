@@ -246,6 +246,8 @@ impl GtkApp {
                 let content = window.content.build();
                 let title = window.display_title();
                 let background = window.background.clone();
+                let state = window.state.clone();
+                let attention = window.attention.clone();
                 // `WindowPlacement` is not `Clone` (it owns `Rc<dyn Fn>`),
                 // but the record stays the owner — the mount clones the
                 // shareable `place` handle and the copyable selector.
@@ -277,6 +279,8 @@ impl GtkApp {
                         crate::window::apply_window_placement(&gtk_window, placement, &app);
                     }
                     crate::window::apply_window_activation(&gtk_window, activation);
+                    crate::window::install_window_state(gtk_window.upcast_ref(), &state);
+                    crate::window::install_attention_settle(gtk_window.upcast_ref(), &attention);
 
                     let (initial_title, title_guard) = subscribe_then_get(&title, {
                         let gtk_window = gtk_window.clone();

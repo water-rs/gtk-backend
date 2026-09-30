@@ -1,13 +1,19 @@
 //! Window management utilities for GTK backend.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
+use gdk4::prelude::ToplevelExt as _;
+use glib::object::{Cast as _, ObjectExt as _};
+use gtk4::prelude::GtkWindowExt;
 use gtk4::{Application, ApplicationWindow};
-use nami::Signal;
+use nami::{Binding, Signal};
 use num_traits::ToPrimitive as _;
-use waterui::window::WindowBackground;
+use waterui::window::{WindowBackground, WindowState};
 use waterui_core::Environment;
 use waterui_graphics::color::ResolvedColor;
 
-use crate::util::{ScopedCss, resolved_color_to_css_rgba, store_watcher_guard};
+use crate::util::{ScopedCss, resolved_color_to_css_rgba, store_watcher_guard, subscribe_then_get};
 
 /// Creates a new application window with the specified properties.
 #[must_use]
@@ -1296,5 +1302,247 @@ mod placement_x11_tests {
             XFlush(test_dpy);
             XCloseDisplay(test_dpy);
         }
+    }
+}
+
+/// Binds `Window::state` onto a GTK window.
+///
+/// Writes to the binding map onto the corresponding `GtkWindow` calls — each
+/// entered state unwinds the ones it is leaving — and compositor-driven
+/// transitions write the binding back: `maximized` and `fullscreened`
+/// property notifications, plus `GdkToplevelState::MINIMIZED` through the
+/// toplevel's `state` notify.
+///
+/// `Window::level`, `Window::attention` and `Window::resize_increments` have
+/// no GTK4 path to bind: GTK4 removed GTK3's `gtk_window_set_keep_above`,
+/// `gtk_window_set_urgency_hint` and `gtk_window_set_geometry_hints` —
+/// keep-above, demand-attention and resize increments are window-manager
+/// hints GTK4 deliberately no longer exposes, so all three are ignored here.
+/// (`install_attention_settle` still honors the binding's write-back half.)
+pub fn install_window_state(window: &gtk4::Window, state: &Binding<WindowState>) {
+    // The state's own transitions notify the write-back handlers below; the
+    // flag keeps a programmatic apply from being read as a compositor move.
+    let applying = Rc::new(Cell::new(false));
+    let apply = {
+        let window = window.clone();
+        let applying = Rc::clone(&applying);
+        move |next: WindowState| {
+            applying.set(true);
+            apply_window_state(&window, next);
+            applying.set(false);
+        }
+    };
+
+    let (initial, guard) = subscribe_then_get(state, {
+        let apply = apply.clone();
+        move |ctx| {
+            let next = ctx.into_value();
+            let apply = apply.clone();
+            glib::idle_add_local_once(move || apply(next));
+        }
+    });
+    apply(initial);
+
+    window.connect_maximized_notify({
+        let state = state.clone();
+        let applying = Rc::clone(&applying);
+        move |window| {
+            // Only Normal and Maximized are written back: an unmaximize also
+            // precedes a fullscreen or minimize transition, and that window
+            // keeps its own state rather than being clobbered to Normal.
+            if applying.get() {
+                return;
+            }
+            let current = state.snapshot();
+            let next = if window.is_maximized() {
+                WindowState::Maximized
+            } else {
+                WindowState::Normal
+            };
+            if matches!(current, WindowState::Normal | WindowState::Maximized) && current != next {
+                state.set(next);
+            }
+        }
+    });
+
+    window.connect_fullscreened_notify({
+        let state = state.clone();
+        let applying = Rc::clone(&applying);
+        move |window| {
+            if applying.get() {
+                return;
+            }
+            let current = state.snapshot();
+            let next = if window.is_fullscreen() {
+                WindowState::Fullscreen
+            } else if window.is_maximized() {
+                WindowState::Maximized
+            } else {
+                WindowState::Normal
+            };
+            if matches!(
+                current,
+                WindowState::Normal | WindowState::Maximized | WindowState::Fullscreen
+            ) && current != next
+            {
+                state.set(next);
+            }
+        }
+    });
+
+    // The minimized flag lives on the toplevel's `state`, which only exists
+    // once the window has a surface, so the notify is wired when it lands.
+    window.connect_notify_local(Some("surface"), {
+        let state = state.clone();
+        let applying = Rc::clone(&applying);
+        move |window, _| {
+            use gtk4::prelude::NativeExt as _;
+            let Some(toplevel) = window
+                .surface()
+                .and_then(|surface| surface.downcast::<gdk4::Toplevel>().ok())
+            else {
+                return;
+            };
+            let state = state.clone();
+            let applying = Rc::clone(&applying);
+            let window = window.clone();
+            toplevel.connect_state_notify(move |toplevel| {
+                if applying.get() {
+                    return;
+                }
+                let minimized = toplevel.state().contains(gdk4::ToplevelState::MINIMIZED);
+                let current = state.snapshot();
+                if minimized {
+                    if current != WindowState::Minimized {
+                        state.set(WindowState::Minimized);
+                    }
+                } else if current == WindowState::Minimized {
+                    let next = if window.is_fullscreen() {
+                        WindowState::Fullscreen
+                    } else if window.is_maximized() {
+                        WindowState::Maximized
+                    } else {
+                        WindowState::Normal
+                    };
+                    state.set(next);
+                }
+            });
+        }
+    });
+
+    store_watcher_guard(window, guard);
+}
+
+fn apply_window_state(window: &gtk4::Window, state: WindowState) {
+    match state {
+        WindowState::Normal => {
+            window.unmaximize();
+            window.unfullscreen();
+            window.unminimize();
+            window.present();
+        }
+        WindowState::Closed => window.close(),
+        WindowState::Minimized => {
+            window.unfullscreen();
+            window.minimize();
+        }
+        WindowState::Maximized => {
+            window.unfullscreen();
+            window.unminimize();
+            window.present();
+            window.maximize();
+        }
+        WindowState::Fullscreen => {
+            window.unminimize();
+            window.present();
+            window.fullscreen();
+        }
+    }
+}
+
+/// Settles `Window::attention` back to `None` once the window gains focus.
+///
+/// GTK4 exposes no way to *raise* the request — the urgency hint was removed
+/// with the other X11 window-manager hints — so this is only the contract's
+/// write-back half: a pending request resolves the moment the window is
+/// active.
+pub fn install_attention_settle(
+    window: &gtk4::Window,
+    attention: &Binding<Option<waterui::window::UserAttention>>,
+) {
+    window.connect_is_active_notify({
+        let attention = attention.clone();
+        move |window| {
+            if window.is_active() && attention.snapshot().is_some() {
+                attention.set(None);
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod window_state_tests {
+    use std::time::{Duration, Instant};
+
+    use glib::MainContext;
+    use gtk4::prelude::{NativeExt as _, WidgetExt as _};
+    use nami::binding;
+
+    use super::*;
+
+    fn init() {
+        gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
+    }
+
+    /// Pumps the default main context until `condition` holds; window-state
+    /// changes round-trip through the compositor, so assertions poll.
+    fn wait_until(mut condition: impl FnMut() -> bool) {
+        let context = MainContext::default();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !condition() {
+            assert!(Instant::now() < deadline, "timed out waiting for GTK state");
+            context.iteration(true);
+        }
+    }
+
+    fn minimized(window: &gtk4::Window) -> bool {
+        window
+            .surface()
+            .and_then(|surface| surface.downcast::<gdk4::Toplevel>().ok())
+            .is_some_and(|toplevel| toplevel.state().contains(gdk4::ToplevelState::MINIMIZED))
+    }
+
+    /// Presents a window wired to `state` and waits until it is mapped, which
+    /// is when the toplevel (and its `state` notify) exists.
+    fn present(state: &Binding<WindowState>) -> gtk4::Window {
+        let window = gtk4::Window::new();
+        install_window_state(&window, state);
+        window.present();
+        wait_until(|| window.is_mapped());
+        window
+    }
+
+    #[test]
+    fn restores_normal_from_fullscreen() {
+        init();
+        let state = binding(WindowState::Normal);
+        let window = present(&state);
+        state.set(WindowState::Fullscreen);
+        wait_until(|| window.is_fullscreen());
+        state.set(WindowState::Normal);
+        wait_until(|| !window.is_fullscreen() && !window.is_maximized() && !minimized(&window));
+        assert_eq!(state.snapshot(), WindowState::Normal);
+    }
+
+    #[test]
+    fn restores_normal_from_minimized() {
+        init();
+        let state = binding(WindowState::Normal);
+        let window = present(&state);
+        state.set(WindowState::Minimized);
+        wait_until(|| minimized(&window));
+        state.set(WindowState::Normal);
+        wait_until(|| window.is_mapped() && !minimized(&window));
+        assert_eq!(state.snapshot(), WindowState::Normal);
     }
 }
