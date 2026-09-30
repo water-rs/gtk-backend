@@ -270,7 +270,12 @@ impl GtkApp {
                     let gtk_window = create_window(&app, "", 800, 600);
                     crate::theme::install(&mut env, gtk_window.upcast_ref());
                     install_inspect_gesture(&gtk_window, &env);
-                    apply_window_background(&gtk_window, &background, &env);
+                    // Resolved after the theme is installed: an opaque
+                    // window paints the theme's background colour.
+                    apply_window_background(
+                        &gtk_window,
+                        &waterui::window::resolve_background(&background, &env),
+                    );
                     crate::window::apply_window_style(&gtk_window, &style);
                     // Placement resolves its selector now — mount time —
                     // and only its size applies: GTK4 gives toplevels no

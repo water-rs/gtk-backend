@@ -1,9 +1,9 @@
 //! Window management utilities for GTK backend.
 
 use gtk4::{Application, ApplicationWindow};
-use nami::{Binding, Signal};
+use nami::{Binding, Computed};
 use num_traits::ToPrimitive as _;
-use waterui::window::{WindowBackground, WindowStyle};
+use waterui::window::WindowStyle;
 use waterui_core::Environment;
 use waterui_graphics::color::ResolvedColor;
 
@@ -736,39 +736,30 @@ const fn style_is_decorated(style: WindowStyle) -> bool {
     !matches!(style, WindowStyle::Borderless)
 }
 
-/// Applies `WaterUI` window background styling to a GTK window.
-pub fn apply_window_background(
-    window: &ApplicationWindow,
-    background: &WindowBackground,
-    env: &Environment,
-) {
-    match background {
-        WindowBackground::Opaque => {}
-        WindowBackground::Color(color) => {
-            let css = ScopedCss::attach(
-                window,
-                "waterui-window-background",
-                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-
-            let signal = color.resolve(env);
-
-            // Initial apply
-            apply_background_css(&css, signal.snapshot());
-
-            // Reactive updates
-            let guard = signal.watch({
-                let css = css;
-                move |ctx| {
-                    let resolved = ctx.into_value();
-                    let css = css.clone();
-                    glib::idle_add_local_once(move || apply_background_css(&css, resolved));
-                }
-            });
-
-            store_watcher_guard(window, guard);
+/// Applies the window's reactive background to a GTK window and keeps
+/// applying its changes.
+///
+/// `resolved` is the window background resolved with
+/// [`resolve_background`](waterui::window::resolve_background): the theme background for an opaque window, the declared colour otherwise,
+/// following both a switch between the two and a change of the colour. It is
+/// painted as the window's CSS background, so a translucent colour reaches
+/// the compositor.
+pub fn apply_window_background(window: &ApplicationWindow, resolved: &Computed<ResolvedColor>) {
+    let css = ScopedCss::attach(
+        window,
+        "waterui-window-background",
+        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+    let (initial, guard) = subscribe_then_get(resolved, {
+        let css = css.clone();
+        move |ctx| {
+            let resolved = ctx.into_value();
+            let css = css.clone();
+            glib::idle_add_local_once(move || apply_background_css(&css, resolved));
         }
-    }
+    });
+    apply_background_css(&css, initial);
+    store_watcher_guard(window, guard);
 }
 
 fn apply_background_css(css: &ScopedCss, resolved: ResolvedColor) {
