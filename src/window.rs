@@ -1484,10 +1484,8 @@ pub fn install_attention_settle(
 mod window_state_tests {
     use std::time::{Duration, Instant};
 
-    use gdk4::prelude::ToplevelExt as _;
     use glib::MainContext;
-    use glib::object::Cast as _;
-    use gtk4::prelude::{GtkWindowExt as _, NativeExt as _, WidgetExt as _};
+    use gtk4::prelude::{NativeExt as _, WidgetExt as _};
     use nami::binding;
 
     use super::*;
