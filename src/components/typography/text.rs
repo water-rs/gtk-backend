@@ -2,8 +2,14 @@
 
 use gtk4::prelude::*;
 use gtk4::{Label, Widget};
-use nami::Signal;
+use nami::{
+    Computed, Signal,
+    watcher::{BoxWatcherGuard, WatcherGuard},
+};
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fmt::Write;
+use std::rc::Rc;
 use waterui::theme::{color::Foreground, installed_color_signal};
 use waterui_core::layout::HorizontalAlignment;
 use waterui_core::{Environment, Native};
@@ -26,12 +32,18 @@ impl GtkComponent for Native<TextConfig> {
         let paragraph_alignment = config.paragraph_alignment;
 
         let label = Label::new(None);
-        apply_styled_content(
+
+        // Arm the per-chunk font watchers before the first markup build so a
+        // font change racing it still schedules a rebuild.
+        let initial_content = content.snapshot();
+        let font_watchers = Rc::new(FontWatcherCell(RefCell::new(watch_resolved_fonts(
             &label,
-            content.snapshot(),
-            paragraph_alignment.snapshot(),
+            &initial_content,
+            &content,
+            &paragraph_alignment,
             env,
-        );
+        ))));
+        apply_styled_content(&label, initial_content, paragraph_alignment.snapshot(), env);
 
         // Match native behavior: read-only text should not be selection-active by default.
         label.set_selectable(false);
@@ -52,23 +64,14 @@ impl GtkComponent for Native<TextConfig> {
         // released. An `upgrade` that fails means the label is gone and the
         // update is dropped with it.
         let mut guards = Vec::new();
-        {
-            let weak_label = label.downgrade();
-            let env = env.clone();
-            let paragraph_alignment = paragraph_alignment.clone();
-            guards.push(content.watch(move |ctx| {
-                let Some(label) = weak_label.upgrade() else {
-                    return;
-                };
-                let content = ctx.into_value();
-                let env = env.clone();
-                let alignment = paragraph_alignment.snapshot();
-                // Schedule update on GTK main thread
-                glib::idle_add_local_once(move || {
-                    apply_styled_content(&label, content, alignment, &env);
-                });
-            }));
-        }
+        guards.push(watch_content(
+            &label,
+            &content,
+            &paragraph_alignment,
+            font_watchers.clone(),
+            env,
+        ));
+        guards.push(Box::new(font_watchers));
 
         {
             let weak_label = label.downgrade();
@@ -134,6 +137,104 @@ impl GtkComponent for Native<TextConfig> {
 
         label.upcast()
     }
+}
+
+/// The live set of guards watching the displayed chunks' resolved fonts. It is
+/// swapped wholesale when the content's chunks change, and the cell joins the
+/// widget's own watcher-guard store, so the whole chain drops with the widget.
+/// (A `Constant` content signal keeps no watcher alive — the store is the only
+/// owner that cannot drop the cell.)
+type FontWatchers = Rc<FontWatcherCell>;
+
+struct FontWatcherCell(RefCell<Vec<BoxWatcherGuard>>);
+
+impl WatcherGuard for FontWatcherCell {}
+
+/// Watches `content` and rebuilds the label on the GTK main thread when the
+/// styled text changes, re-arming the per-chunk font watchers onto the new
+/// chunks first so a font change racing the swap still schedules a rebuild;
+/// the replaced guards die with the stale chunks they resolved.
+fn watch_content(
+    label: &Label,
+    content: &Computed<StyledStr>,
+    paragraph_alignment: &Computed<HorizontalAlignment>,
+    font_watchers: FontWatchers,
+    env: &Environment,
+) -> BoxWatcherGuard {
+    let weak_label = label.downgrade();
+    let env = env.clone();
+    let paragraph_alignment = paragraph_alignment.clone();
+    let content_signal = content.clone();
+    content.watch(move |ctx| {
+        let Some(label) = weak_label.upgrade() else {
+            return;
+        };
+        let content = ctx.into_value();
+        let env = env.clone();
+        let alignment = paragraph_alignment.snapshot();
+        let content_signal = content_signal.clone();
+        let paragraph_alignment = paragraph_alignment.clone();
+        let font_watchers = font_watchers.clone();
+        // Schedule update on GTK main thread
+        glib::idle_add_local_once(move || {
+            *font_watchers.0.borrow_mut() = watch_resolved_fonts(
+                &label,
+                &content,
+                &content_signal,
+                &paragraph_alignment,
+                &env,
+            );
+            apply_styled_content(&label, content, alignment, &env);
+        });
+    })
+}
+
+/// Watches the resolved font of every chunk in `styled` and rebuilds the
+/// label's markup through [`apply_styled_content`] when any of them changes,
+/// covering theme font slots swapped at runtime and app-driven font signals.
+/// Chunks resolving the same slot share one signal identity, so a single
+/// change yields a single rebuild. Callers swap the returned set wholesale
+/// when the displayed chunks change; dropping it unsubscribes.
+fn watch_resolved_fonts(
+    label: &Label,
+    styled: &StyledStr,
+    content: &Computed<StyledStr>,
+    paragraph_alignment: &Computed<HorizontalAlignment>,
+    env: &Environment,
+) -> Vec<BoxWatcherGuard> {
+    let mut seen = HashSet::new();
+    styled
+        .chunks()
+        .iter()
+        .map(|(_, style)| style.font.resolve(env))
+        .filter(|signal| {
+            signal
+                .identity()
+                .is_none_or(|identity| seen.insert(identity))
+        })
+        .map(|signal| {
+            let weak_label = label.downgrade();
+            let env = env.clone();
+            let content = content.clone();
+            let paragraph_alignment = paragraph_alignment.clone();
+            signal.watch(move |_ctx| {
+                let Some(label) = weak_label.upgrade() else {
+                    return;
+                };
+                let env = env.clone();
+                let content = content.clone();
+                let paragraph_alignment = paragraph_alignment.clone();
+                glib::idle_add_local_once(move || {
+                    apply_styled_content(
+                        &label,
+                        content.snapshot(),
+                        paragraph_alignment.snapshot(),
+                        &env,
+                    );
+                });
+            })
+        })
+        .collect()
 }
 
 fn apply_styled_content(
@@ -484,6 +585,44 @@ mod tests {
 
         parent.set_sensitive(true);
         assert!(parsed_attr(&label.label(), gtk4::pango::AttrType::Foreground).is_some());
+    }
+
+    /// Mutating the slot signal a chunk's font resolves to must rebuild the
+    /// label's markup through the same path content and foreground changes
+    /// take: the scheduled rebuild lands the new family, size and weight in
+    /// the Pango attributes without the text content changing.
+    #[test]
+    fn resolved_font_change_rebuilds_markup() {
+        init();
+        let font =
+            nami::Binding::container(ResolvedFont::with_family(16.0, FontWeight::Normal, "Serif"));
+        let mut env = test_env();
+        install_font_signal::<Body>(&mut env, Computed::from(font.clone()));
+        let label = render_label(&env, "body");
+
+        let family = || {
+            parsed_attr(&label.label(), gtk4::pango::AttrType::Family).map(|attr| {
+                attr.downcast_ref::<gtk4::pango::AttrString>()
+                    .expect("family attribute")
+                    .value()
+                    .to_string()
+            })
+        };
+        assert_eq!(family().as_deref(), Some("Serif"));
+
+        font.set(ResolvedFont::with_family(
+            20.0,
+            FontWeight::Bold,
+            "Monospace",
+        ));
+        while glib::MainContext::default().iteration(false) {}
+
+        assert_eq!(family().as_deref(), Some("Monospace"));
+        assert!(label.label().contains("size=\"20.00pt\""));
+        assert_eq!(
+            parsed_int(&label.label(), gtk4::pango::AttrType::Weight),
+            Some(700)
+        );
     }
 
     /// The watcher guards live in the label's own qdata, so their callbacks
