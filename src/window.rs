@@ -1,13 +1,14 @@
 //! Window management utilities for GTK backend.
 
+use gtk4::prelude::GtkWindowExt;
 use gtk4::{Application, ApplicationWindow};
-use nami::Signal;
+use nami::{Binding, Signal};
 use num_traits::ToPrimitive as _;
-use waterui::window::WindowBackground;
+use waterui::window::{WindowBackground, WindowState};
 use waterui_core::Environment;
 use waterui_graphics::color::ResolvedColor;
 
-use crate::util::{ScopedCss, resolved_color_to_css_rgba, store_watcher_guard};
+use crate::util::{ScopedCss, resolved_color_to_css_rgba, store_watcher_guard, subscribe_then_get};
 
 /// Creates a new application window with the specified properties.
 #[must_use]
@@ -1297,4 +1298,80 @@ mod placement_x11_tests {
             XCloseDisplay(test_dpy);
         }
     }
+}
+
+/// Binds `Window::state` onto a GTK window.
+///
+/// Writes to the binding map onto the corresponding `GtkWindow` call, and a
+/// `maximized` property change — the user toggling maximization through the
+/// window chrome — writes the binding back.
+///
+/// `Window::level`, `Window::attention` and `Window::resize_increments` have
+/// no GTK4 path to bind: GTK4 removed GTK3's `gtk_window_set_keep_above`,
+/// `gtk_window_set_urgency_hint` and `gtk_window_set_geometry_hints` —
+/// keep-above, demand-attention and resize increments are window-manager
+/// hints GTK4 deliberately no longer exposes, so all three are ignored here.
+/// (`install_attention_settle` still honors the binding's write-back half.)
+pub fn install_window_state(window: &ApplicationWindow, state: &Binding<WindowState>) {
+    let (initial, guard) = subscribe_then_get(state, {
+        let window = window.clone();
+        move |ctx| {
+            let next = ctx.into_value();
+            let window = window.clone();
+            glib::idle_add_local_once(move || apply_window_state(&window, next));
+        }
+    });
+    apply_window_state(window, initial);
+
+    window.connect_maximized_notify({
+        let state = state.clone();
+        move |window| {
+            // Only Normal and Maximized are written back: an unmaximize also
+            // precedes a fullscreen or minimize transition, and that window
+            // keeps its own state rather than being clobbered to Normal.
+            let current = state.snapshot();
+            let next = if window.is_maximized() {
+                WindowState::Maximized
+            } else {
+                WindowState::Normal
+            };
+            if matches!(current, WindowState::Normal | WindowState::Maximized) && current != next {
+                state.set(next);
+            }
+        }
+    });
+
+    store_watcher_guard(window, guard);
+}
+
+fn apply_window_state(window: &ApplicationWindow, state: WindowState) {
+    match state {
+        WindowState::Normal => {
+            window.unmaximize();
+        }
+        WindowState::Closed => window.close(),
+        WindowState::Minimized => window.minimize(),
+        WindowState::Maximized => window.maximize(),
+        WindowState::Fullscreen => window.fullscreen(),
+    }
+}
+
+/// Settles `Window::attention` back to `None` once the window gains focus.
+///
+/// GTK4 exposes no way to *raise* the request — the urgency hint was removed
+/// with the other X11 window-manager hints — so this is only the contract's
+/// write-back half: a pending request resolves the moment the window is
+/// active.
+pub fn install_attention_settle(
+    window: &ApplicationWindow,
+    attention: &Binding<Option<waterui::window::UserAttention>>,
+) {
+    window.connect_is_active_notify({
+        let attention = attention.clone();
+        move |window| {
+            if window.is_active() && attention.snapshot().is_some() {
+                attention.set(None);
+            }
+        }
+    });
 }
