@@ -279,8 +279,8 @@ impl GtkApp {
                         crate::window::apply_window_placement(&gtk_window, placement, &app);
                     }
                     crate::window::apply_window_activation(&gtk_window, activation);
-                    crate::window::install_window_state(&gtk_window, &state);
-                    crate::window::install_attention_settle(&gtk_window, &attention);
+                    crate::window::install_window_state(gtk_window.upcast_ref(), &state);
+                    crate::window::install_attention_settle(gtk_window.upcast_ref(), &attention);
 
                     let (initial_title, title_guard) = subscribe_then_get(&title, {
                         let gtk_window = gtk_window.clone();
