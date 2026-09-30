@@ -1,11 +1,12 @@
 //! Window management utilities for GTK backend.
 
 use gtk4::{Application, ApplicationWindow};
-use nami::{Binding, Computed};
+use nami::{Binding, Computed, Signal};
 use num_traits::ToPrimitive as _;
 use waterui::window::WindowStyle;
 use waterui_core::Environment;
 use waterui_graphics::color::ResolvedColor;
+use waterui_graphics::peniko::ImageData;
 
 use crate::util::{ScopedCss, resolved_color_to_css_rgba, store_watcher_guard, subscribe_then_get};
 
@@ -734,6 +735,65 @@ pub fn apply_window_style(window: &ApplicationWindow, style: &Binding<WindowStyl
 
 const fn style_is_decorated(style: WindowStyle) -> bool {
     !matches!(style, WindowStyle::Borderless)
+}
+
+/// Applies the window's own reactive icon and keeps applying its changes.
+///
+/// The icon goes on the toplevel's icon list, which exists once the window is
+/// realized: the realize handler sets the icon current at that point, and a
+/// change after it replaces the list. `None` empties the list, which puts
+/// back the application's own icon. Whether the list is shown is the
+/// windowing system's call — X11 shows it, Wayland compositors without the
+/// toplevel-icon protocol keep the application's.
+pub fn apply_window_icon(window: &ApplicationWindow, icon: &Binding<Option<ImageData>>) {
+    use gtk4::prelude::*;
+    window.connect_realize({
+        let icon = icon.clone();
+        move |window| set_window_icon(window, icon.snapshot().as_ref())
+    });
+    let guard = icon.watch({
+        let window = window.clone();
+        move |ctx| {
+            let icon = ctx.into_value();
+            let window = window.clone();
+            glib::idle_add_local_once(move || {
+                if window.is_realized() {
+                    set_window_icon(&window, icon.as_ref());
+                }
+            });
+        }
+    });
+    store_watcher_guard(window, guard);
+}
+
+fn set_window_icon(window: &ApplicationWindow, icon: Option<&ImageData>) {
+    use gtk4::prelude::*;
+    let toplevel = window
+        .surface()
+        .expect("a realized window has a surface")
+        .downcast::<gdk4::Toplevel>()
+        .expect("a window's surface is a toplevel");
+    let textures: Vec<gdk4::Texture> = icon.map(icon_texture).into_iter().collect();
+    toplevel.set_icon_list(&textures);
+}
+
+/// The icon's pixels as a GDK texture, in the layout they arrive in.
+fn icon_texture(icon: &ImageData) -> gdk4::Texture {
+    use gtk4::prelude::*;
+    use waterui_graphics::peniko::{ImageAlphaType, ImageFormat};
+    let premultiplied = matches!(icon.alpha_type, ImageAlphaType::AlphaPremultiplied);
+    let format = match (icon.format, premultiplied) {
+        (ImageFormat::Rgba8, false) => gdk4::MemoryFormat::R8g8b8a8,
+        (ImageFormat::Rgba8, true) => gdk4::MemoryFormat::R8g8b8a8Premultiplied,
+        (ImageFormat::Bgra8, false) => gdk4::MemoryFormat::B8g8r8a8,
+        (ImageFormat::Bgra8, true) => gdk4::MemoryFormat::B8g8r8a8Premultiplied,
+        (other, _) => panic!("GTK window icon: unsupported pixel format {other:?}"),
+    };
+    let width = i32::try_from(icon.width).expect("icon width fits a GDK texture");
+    let height = i32::try_from(icon.height).expect("icon height fits a GDK texture");
+    let bytes = glib::Bytes::from(icon.data.data());
+    let stride = usize::try_from(icon.width).expect("icon width fits in memory") * 4;
+    gdk4::MemoryTexture::new(width, height, format, &bytes, stride).upcast()
 }
 
 /// Applies the window's reactive background to a GTK window and keeps
