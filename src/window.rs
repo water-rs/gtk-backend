@@ -9,7 +9,7 @@ use gtk4::prelude::GtkWindowExt;
 use gtk4::{Application, ApplicationWindow};
 use nami::{Binding, Computed, Signal};
 use num_traits::ToPrimitive as _;
-use waterui::window::{WindowState, WindowStyle};
+use waterui::window::{WindowIcon, WindowState, WindowStyle};
 use waterui_core::Environment;
 use waterui_graphics::color::ResolvedColor;
 
@@ -740,6 +740,96 @@ pub fn apply_window_style(window: &ApplicationWindow, style: &Binding<WindowStyl
 
 const fn style_is_decorated(style: WindowStyle) -> bool {
     !matches!(style, WindowStyle::Borderless)
+}
+
+/// Applies the window's own reactive icon and keeps applying its changes.
+///
+/// A pixel icon lives on the toplevel's icon list, which exists once the
+/// window is realized. GTK fills that list from the window's icon name while
+/// realizing — the application id `install_app_icon` makes the default — so
+/// the window's own icon goes on right after, from the realize handler, and
+/// every later change replaces the list. `None` hands the list back to GTK's
+/// icon name. Whether the list is shown is the windowing system's call: X11
+/// shows it, Wayland compositors without the toplevel-icon protocol keep the
+/// application's icon.
+pub fn apply_window_icon(window: &ApplicationWindow, icon: &Binding<Option<WindowIcon>>) {
+    use gtk4::prelude::*;
+    window.connect_realize({
+        let icon = icon.clone();
+        move |window| {
+            if let Some(icon) = icon.snapshot() {
+                set_window_icon(window, &icon);
+            }
+        }
+    });
+    let (initial, guard) = subscribe_then_get(icon, {
+        let window = window.clone();
+        move |ctx| {
+            let icon = ctx.into_value();
+            let window = window.clone();
+            glib::idle_add_local_once(move || {
+                // An unrealized window picks the newest icon up when it
+                // realizes.
+                if !window.is_realized() {
+                    return;
+                }
+                match icon {
+                    Some(icon) => set_window_icon(&window, &icon),
+                    None => restore_application_icon(&window),
+                }
+            });
+        }
+    });
+    if window.is_realized()
+        && let Some(icon) = initial
+    {
+        set_window_icon(window, &icon);
+    }
+    store_watcher_guard(window, guard);
+}
+
+fn window_toplevel(window: &ApplicationWindow) -> gdk4::Toplevel {
+    use gtk4::prelude::*;
+    window
+        .surface()
+        .expect("a realized window has a surface")
+        .downcast::<gdk4::Toplevel>()
+        .expect("a window's surface is a toplevel")
+}
+
+fn set_window_icon(window: &ApplicationWindow, icon: &WindowIcon) {
+    use gtk4::prelude::*;
+    let width = i32::try_from(icon.width()).expect("icon width fits a GDK texture");
+    let height = i32::try_from(icon.height()).expect("icon height fits a GDK texture");
+    let stride = usize::try_from(icon.width()).expect("icon width fits in memory") * 4;
+    let texture = gdk4::MemoryTexture::new(
+        width,
+        height,
+        gdk4::MemoryFormat::R8g8b8a8,
+        &glib::Bytes::from(icon.rgba()),
+        stride,
+    );
+    window_toplevel(window).set_icon_list(&[texture.upcast()]);
+}
+
+/// Hands the toplevel's icon list back to GTK.
+///
+/// GTK derives the list from the window's icon name — or the default icon
+/// name when the window has none — every time that name changes, so moving
+/// the name away and back makes GTK put the application's icon back.
+fn restore_application_icon(window: &ApplicationWindow) {
+    match (window.icon_name(), gtk4::Window::default_icon_name()) {
+        (Some(own), _) => {
+            window.set_icon_name(None);
+            window.set_icon_name(Some(own.as_str()));
+        }
+        (None, Some(default)) => {
+            window.set_icon_name(Some(default.as_str()));
+            window.set_icon_name(None);
+        }
+        // Without any icon name GTK realizes an empty list.
+        (None, None) => window_toplevel(window).set_icon_list(&[]),
+    }
 }
 
 /// Applies the window's reactive background to a GTK window and keeps

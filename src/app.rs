@@ -249,6 +249,7 @@ impl GtkApp {
                 let state = window.state.clone();
                 let attention = window.attention.clone();
                 let style = window.style.clone();
+                let icon = window.icon.clone();
                 // `WindowPlacement` is not `Clone` (it owns `Rc<dyn Fn>`),
                 // but the record stays the owner — the mount clones the
                 // shareable `place` handle and the copyable selector.
@@ -279,6 +280,7 @@ impl GtkApp {
                         &waterui::window::resolve_background(&background, &env),
                     );
                     crate::window::apply_window_style(&gtk_window, &style);
+                    crate::window::apply_window_icon(&gtk_window, &icon);
                     // Placement resolves its selector now — mount time —
                     // and only its size applies: GTK4 gives toplevels no
                     // position API.
