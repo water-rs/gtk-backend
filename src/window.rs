@@ -9,7 +9,7 @@ use gtk4::prelude::GtkWindowExt;
 use gtk4::{Application, ApplicationWindow};
 use nami::{Binding, Signal};
 use num_traits::ToPrimitive as _;
-use waterui::window::{WindowBackground, WindowState};
+use waterui::window::{WindowBackground, WindowState, WindowStyle};
 use waterui_core::Environment;
 use waterui_graphics::color::ResolvedColor;
 
@@ -716,6 +716,30 @@ pub fn apply_window_activation(
             window.set_focus_on_click(false);
         }
     }
+}
+
+/// Applies the window's reactive [`WindowStyle`] and keeps applying its
+/// changes.
+///
+/// GTK4 toplevels have one chrome switch, `decorated`: `Borderless` removes
+/// the title bar and frame, `Titled` and `FullSizeContentView` keep them —
+/// GTK has no content-under-titlebar mode, so the latter renders titled.
+pub fn apply_window_style(window: &ApplicationWindow, style: &Binding<WindowStyle>) {
+    use gtk4::prelude::*;
+    let (initial, guard) = subscribe_then_get(style, {
+        let window = window.clone();
+        move |ctx| {
+            let decorated = style_is_decorated(ctx.into_value());
+            let window = window.clone();
+            glib::idle_add_local_once(move || window.set_decorated(decorated));
+        }
+    });
+    window.set_decorated(style_is_decorated(initial));
+    store_watcher_guard(window, guard);
+}
+
+const fn style_is_decorated(style: WindowStyle) -> bool {
+    !matches!(style, WindowStyle::Borderless)
 }
 
 /// Applies `WaterUI` window background styling to a GTK window.
