@@ -248,6 +248,7 @@ impl GtkApp {
                 let background = window.background.clone();
                 let state = window.state.clone();
                 let attention = window.attention.clone();
+                let style = window.style.clone();
                 // `WindowPlacement` is not `Clone` (it owns `Rc<dyn Fn>`),
                 // but the record stays the owner — the mount clones the
                 // shareable `place` handle and the copyable selector.
@@ -272,6 +273,7 @@ impl GtkApp {
                     crate::theme::install(&mut env, gtk_window.upcast_ref());
                     install_inspect_gesture(&gtk_window, &env);
                     apply_window_background(&gtk_window, &background, &env);
+                    crate::window::apply_window_style(&gtk_window, &style);
                     // Placement resolves its selector now — mount time —
                     // and only its size applies: GTK4 gives toplevels no
                     // position API.
