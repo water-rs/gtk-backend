@@ -121,11 +121,9 @@ pub fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRunti
 /// GTK pick the right size everywhere the icon appears. Without a staged
 /// bundle (bare `cargo run`, tests) the theme simply has no icon with that
 /// name and GTK falls back to its generic window icon.
-fn install_app_icon(app_id: &str) {
+fn install_app_icon(app_id: &str, resources: &waterui_core::ResourceContext) {
     gtk4::Window::set_default_icon_name(app_id);
-    let Ok(bundle_root) = waterui_assets::bundle_root() else {
-        return;
-    };
+    let bundle_root = waterui_assets::bundle_root(resources);
     let Some(resources_root) = bundle_root.parent() else {
         return;
     };
@@ -167,6 +165,7 @@ impl GtkApp {
     #[must_use = "the returned value is the process exit status"]
     pub fn run<V: View + Clone + 'static>(self, view: V, env: Environment) -> i32 {
         let mut env = env;
+        waterui_core::install_application_resources(&mut env);
         // GTK draws text with Pango and owns no `parley` collection, so a
         // component that typesets text itself gets the system's fonts here,
         // once for the application rather than once per view.
@@ -177,7 +176,10 @@ impl GtkApp {
 
         self.app.connect_activate(move |app| {
             if let Some(app_id) = app.application_id() {
-                install_app_icon(app_id.as_str());
+                install_app_icon(
+                    app_id.as_str(),
+                    waterui_core::ResourceContext::from_environment(&env),
+                );
             }
             let inspector = init_main_thread_executors();
             let app = app.clone();
@@ -229,6 +231,7 @@ impl GtkApp {
             ..
         } = waterui_app.into_parts();
         let mut env = env;
+        waterui_core::install_application_resources(&mut env);
         // GTK draws text with Pango and owns no `parley` collection, so a
         // component that typesets text itself gets the system's fonts here,
         // once for the application rather than once per view.
