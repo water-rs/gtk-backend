@@ -272,6 +272,12 @@ impl GtkApp {
                         .await
                         .unwrap_or_else(|error| panic!("GTK GPU runtime creation failed: {error}"));
                     env.insert(runtime);
+                    if let Some(app_id) = app.application_id() {
+                        install_app_icon(
+                            app_id.as_str(),
+                            waterui_core::ResourceContext::from_environment(&env),
+                        );
+                    }
                     let gtk_window = create_window(&app, "", 800, 600);
                     crate::theme::install(&mut env, gtk_window.upcast_ref());
                     install_inspect_gesture(&gtk_window, &env);
@@ -361,5 +367,40 @@ impl GtkApp {
 impl Default for GtkApp {
     fn default() -> Self {
         Self::new("com.waterui.app")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A staged bundle puts `icons/` beside `waterui_assets/`; the install
+    /// must add that directory to the display's icon theme and name the app
+    /// id as the default window icon — the same path `run` and `run_app`
+    /// both take.
+    #[test]
+    fn install_app_icon_registers_the_staged_icons_dir() {
+        gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
+        let staging = std::env::temp_dir().join(format!("gtk-app-icon-{}", std::process::id()));
+        let resources_root = staging.join("resources");
+        let icons_dir = resources_root.join("icons");
+        let assets_dir = resources_root.join("waterui_assets");
+        std::fs::create_dir_all(&icons_dir).unwrap();
+        std::fs::create_dir_all(&assets_dir).unwrap();
+        let context = waterui_core::ResourceContext::new(&assets_dir, resources_root.join("fonts"));
+
+        install_app_icon("com.example.gtk_test", &context);
+
+        assert_eq!(
+            gtk4::Window::default_icon_name().as_deref(),
+            Some("com.example.gtk_test")
+        );
+        let display = gtk4::gdk::Display::default().expect("display");
+        assert!(
+            gtk4::IconTheme::for_display(&display)
+                .search_path()
+                .contains(&icons_dir)
+        );
+        std::fs::remove_dir_all(&staging).ok();
     }
 }

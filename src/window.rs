@@ -982,7 +982,7 @@ mod placement_x11_tests {
             return;
         };
         let monitors = settled_monitors(&display);
-        assert!(!monitors.is_empty());
+        assert_ne!(monitors.len(), 0);
         let test_dpy = test_xdisplay();
         for monitor in &monitors {
             let (left, top, width, height) = physical_rect(monitor);
@@ -1111,7 +1111,7 @@ mod placement_x11_tests {
             return;
         };
         let monitors = settled_monitors(&display);
-        assert!(!monitors.is_empty());
+        assert_ne!(monitors.len(), 0);
         // Put the pointer on the last monitor so `Pointer` resolves there.
         let test_dpy = test_xdisplay();
         {
