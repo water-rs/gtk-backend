@@ -429,8 +429,9 @@ pub struct GpuHostState {
     /// surface does.
     frames: Option<Receiver<DmabufFrame>>,
     /// The display's declared `(fourcc, modifiers)` set, resolved once on
-    /// the first surface creation. An empty vec is a real answer — the
-    /// display cannot import dma-buf — not a retry trigger.
+    /// the first surface creation. Resolution panics on an empty
+    /// intersection — a display that cannot import dma-buf cannot host
+    /// this widget.
     formats: Option<Vec<DmabufFormat>>,
     /// The last dma-buf texture presented; kept so a snapshot between
     /// engine frames still has the widget's content to emit.
@@ -734,17 +735,13 @@ impl imp::GpuSurfaceHost {
             }
             let state = &mut *state;
             if state.formats.is_none() {
-                let formats = dmabuf_present::display_formats(&obj.display());
-                if formats.is_empty() {
-                    tracing::error!(
-                        "[gtk-gpu] the display declares no importable dma-buf formats; this GPU surface stays empty"
-                    );
-                }
-                state.formats = Some(formats);
+                // Resolving the set panics when the display cannot import
+                // any of the engine's fourccs — an unimportable GPU
+                // surface fails at the first frame, not silently empty.
+                state.formats = Some(dmabuf_present::display_formats(&obj.display()));
             }
-            if state.surface.is_none()
-                && let Some(formats) = state.formats.as_ref().filter(|list| !list.is_empty())
-            {
+            if state.surface.is_none() {
+                let formats = state.formats.as_ref().expect("formats just resolved");
                 let (target, frames) = DmabufTarget::new(size.tuple());
                 let target = target.formats(formats.clone());
                 let surface = state
@@ -758,12 +755,7 @@ impl imp::GpuSurfaceHost {
                 state.frames = Some(frames);
             }
             let stack = state.stack.as_ref().expect("stack just built");
-            let Some(surface) = state.surface.as_ref() else {
-                // The display declared no importable `(fourcc, modifier)`
-                // pair — the widget stays empty rather than pretending a
-                // presentation path exists.
-                return;
-            };
+            let surface = state.surface.as_ref().expect("surface just built");
             if surface.size() != size.tuple() {
                 surface
                     .resize(size.tuple())

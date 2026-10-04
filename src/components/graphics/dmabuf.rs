@@ -90,7 +90,9 @@ fn export_sync_file(dmabuf: &impl AsRawFd) -> io::Result<OwnedFd> {
 /// is intersected against what an engine could actually produce, in the
 /// display's own preference order, so the negotiation never offers a
 /// combination the engine has no renderable `VkFormat` for.
-const EXPORTABLE_FOURCCS: [u32; 5] = [
+///
+/// `pub` so a negotiation failure can name the engine's side.
+pub const EXPORTABLE_FOURCCS: [u32; 5] = [
     DRM_FORMAT_ABGR8888,
     DRM_FORMAT_XBGR8888,
     DRM_FORMAT_ARGB8888,
@@ -107,11 +109,17 @@ const EXPORTABLE_FOURCCS: [u32; 5] = [
 /// state decodes — `GdkDmabufTextureBuilder::set_color_state`, needed
 /// for any wider encoding, is a GTK 4.16 entry point while this crate's
 /// floor is 4.14.
+///
+/// Panics when the intersection is empty: a display that cannot import
+/// any of the engine's fourccs cannot host a GPU surface — the failure
+/// must surface at the first frame, not degrade to an empty widget.
 pub fn display_formats(display: &gdk4::Display) -> Vec<DmabufFormat> {
     let accepted = display.dmabuf_formats();
+    let mut declared: Vec<(u32, u64)> = Vec::new();
     let mut negotiated: Vec<DmabufFormat> = Vec::new();
     for index in 0..accepted.n_formats() {
         let (fourcc, modifier) = accepted.format(index);
+        declared.push((fourcc, modifier));
         if !EXPORTABLE_FOURCCS.contains(&fourcc) {
             continue;
         }
@@ -129,6 +137,11 @@ pub fn display_formats(display: &gdk4::Display) -> Vec<DmabufFormat> {
             )),
         }
     }
+    assert!(
+        !negotiated.is_empty(),
+        "the GdkDisplay offers no dma-buf formats the engine can export; \
+         engine fourccs {EXPORTABLE_FOURCCS:?}, display declared (fourcc, modifier) pairs {declared:?}"
+    );
     negotiated
 }
 
