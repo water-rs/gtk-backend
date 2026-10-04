@@ -42,8 +42,8 @@ mod theme;
 pub mod util;
 // The only web engine this backend bridges is the platform's own, `WebKitGTK`.
 // Every other engine is a crate the application links and installs, and it
-// reaches the screen as an ordinary `GpuSurface` this backend draws like any
-// other — see `components::graphics::gpu_surface`.
+// reaches the screen as a `GpuContentView`/`ExternalFrameView` this backend
+// realizes like any other — see `components::graphics::gpu_surface`.
 #[cfg(all(target_os = "linux", feature = "webview-system"))]
 #[path = "webview_system.rs"]
 pub mod webview;

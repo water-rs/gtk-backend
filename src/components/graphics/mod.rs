@@ -6,6 +6,7 @@ use kurbo::{BezPath, PathEl};
 pub(crate) mod applied_filter;
 pub mod clip_shape_widget;
 pub mod color;
+pub(crate) mod dmabuf;
 pub(crate) mod gl_util;
 pub mod gpu_surface;
 pub mod gradient;

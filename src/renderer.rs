@@ -53,10 +53,9 @@ use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::picker::multi_date::MultiDatePickerConfig;
 use waterui_form::secure::SecureFieldConfig;
-use waterui_graphics::gpu_surface::GpuSurface;
 use waterui_graphics::{
-    AppliedFilter, Picture, ResolvedGradient,
-    color::{Color, ResolvedColor},
+    ExternalFrameView, FilteredView, GpuContentView, Gradient, Picture, SceneView,
+    color::{Color, WorkingColor},
 };
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
@@ -420,7 +419,7 @@ fn cursor_style_to_gtk_name(style: CursorStyle) -> &'static str {
 
 fn apply_border_css(
     css: &ScopedCss,
-    resolved: ResolvedColor,
+    resolved: WorkingColor,
     width: f32,
     corner_radius: f32,
     edges: waterui_layout::EdgeSet,
@@ -1030,16 +1029,19 @@ impl GtkRenderer {
         #[cfg(feature = "webview-system")]
         Self::register_native::<WebView>(dispatcher);
         Self::register_native::<Color>(dispatcher);
-        Self::register_native::<ResolvedColor>(dispatcher);
-        Self::register_native::<ResolvedGradient>(dispatcher);
+        Self::register_native::<Gradient>(dispatcher);
         Self::register_native::<ResolvedShape>(dispatcher);
         Self::register_native::<Picture>(dispatcher);
 
         // Register Dynamic for reactive content
         Self::register::<Native<Dynamic>>(dispatcher);
 
-        // Register GPU surface (used by waterui-graphics and waterui-media)
-        Self::register_native::<GpuSurface>(dispatcher);
+        // Register the GPU leaf views (rendered producers, retained
+        // scenes, submitted external frames) and the filtered-subtree leaf.
+        Self::register_native::<GpuContentView>(dispatcher);
+        Self::register_native::<SceneView>(dispatcher);
+        Self::register_native::<ExternalFrameView>(dispatcher);
+        Self::register_native::<FilteredView>(dispatcher);
 
         // Register views that implement View directly
         Self::register::<Divider>(dispatcher);
@@ -1801,19 +1803,10 @@ impl GtkRenderer {
             },
         );
 
-        // Metadata<AppliedFilter> - capture the child through the snapshot
-        // pipeline, run the filtrate pipeline on wgpu, and present the
-        // filtered GL texture through GTK's share-group compositor.
-        Self::register_transparent::<Metadata<AppliedFilter>>(
-            dispatcher,
-            |renderer, metadata, env| {
-                let content = renderer.render_any(metadata.content, env);
-                crate::components::graphics::applied_filter::render_applied_filter(
-                    metadata.value,
-                    content,
-                )
-            },
-        );
+        // Native<FilteredView> - handled by applied_filter.rs, which
+        // captures the child through the snapshot pipeline, runs the
+        // effect on wgpu, and presents the filtered GL texture through
+        // GTK's share-group compositor.
 
         // Ignorable metadata with no native semantic realization.
         Self::register_ignorable_metadata::<MaterialBackground>(dispatcher);

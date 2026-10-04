@@ -2,7 +2,7 @@
 //!
 //! Only the bridged system engine is handled here. A browser engine the
 //! application links installs its own realization, and that draws through the
-//! generic `GpuSurface` path instead of ever reaching a `Native<WebView>`.
+//! generic `GpuContentView` path instead of ever reaching a `Native<WebView>`.
 
 use gtk4::Widget;
 use gtk4::prelude::*;
