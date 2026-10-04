@@ -5,7 +5,7 @@ use gtk4::{ColorDialog, ColorDialogButton, Widget, gdk};
 use nami::Signal;
 use waterui_core::{Environment, Native};
 use waterui_form::picker::color::ColorPickerConfig;
-use waterui_graphics::color::Color;
+use waterui_graphics::color::{Color, working};
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
@@ -58,8 +58,8 @@ impl GtkComponent for Native<ColorPickerConfig> {
 
 fn apply_color_button_rgba(button: &ColorDialogButton, color: &Color, env: &Environment) {
     let resolved = color.resolve(env).snapshot();
-    let srgb = resolved.to_srgb_with_headroom();
-    let rgba = gdk::RGBA::new(srgb.red, srgb.green, srgb.blue, resolved.opacity);
+    let srgb = working::to_srgb(resolved);
+    let rgba = gdk::RGBA::new(srgb.red, srgb.green, srgb.blue, resolved.components[3]);
     button.set_rgba(&rgba);
 }
 

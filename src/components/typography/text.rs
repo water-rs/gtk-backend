@@ -13,7 +13,7 @@ use std::rc::Rc;
 use waterui::theme::{color::Foreground, installed_color_signal};
 use waterui_core::layout::HorizontalAlignment;
 use waterui_core::{Environment, Native};
-use waterui_graphics::color::ResolvedColor;
+use waterui_graphics::color::WorkingColor;
 use waterui_text::TextConfig;
 use waterui_text::font::{FontDesign, FontWeight, ResolvedFont};
 use waterui_text::styled::{Style, StyledStr};
@@ -361,7 +361,7 @@ fn style_to_markup_attrs(style: &Style, env: &Environment, sensitive: bool) -> S
 /// as `#RRGGBBAA` (Pango 1.38+): the `alpha`/`background_alpha` attributes
 /// reject zero, so an 8-digit hex is the only markup form covering the full
 /// `[0, 1]` range.
-fn emit_color_attrs(attrs: &mut String, name: &str, color: ResolvedColor) {
+fn emit_color_attrs(attrs: &mut String, name: &str, color: WorkingColor) {
     let (red, green, blue, alpha) = resolved_color_to_rgba8(color);
     if alpha < 1.0 {
         let alpha = channel_to_u8(alpha);
@@ -420,7 +420,7 @@ fn escape_markup_attr(value: &str) -> String {
 mod tests {
     use nami::Computed;
     use waterui::theme::{install_color_signal, install_font_signal};
-    use waterui_graphics::color::{Color, Srgb};
+    use waterui_graphics::color::{Color, Srgb, Working};
     use waterui_text::font::{Body, FontSlot};
 
     use super::*;
@@ -429,8 +429,8 @@ mod tests {
         gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
     }
 
-    fn resolved_u8(red: u8, green: u8, blue: u8, alpha: f32) -> ResolvedColor {
-        ResolvedColor::from_srgb(Srgb::new_u8(red, green, blue)).with_opacity(alpha)
+    fn resolved_u8(red: u8, green: u8, blue: u8, alpha: f32) -> WorkingColor {
+        Srgb::new_u8(red, green, blue).resolve().with_alpha(alpha)
     }
 
     /// A minimal faithful environment: `Style::default().font` resolves the
@@ -442,7 +442,7 @@ mod tests {
         env
     }
 
-    fn env_with_foreground(color: ResolvedColor) -> Environment {
+    fn env_with_foreground(color: WorkingColor) -> Environment {
         let mut env = test_env();
         install_color_signal::<Foreground>(&mut env, Computed::constant(color));
         env
@@ -526,7 +526,7 @@ mod tests {
         let mut content = StyledStr::from("");
         content.push(
             "hi",
-            Style::default().foreground(Color::new(resolved_u8(255, 0, 0, 0.25))),
+            Style::default().foreground(Color::new(Working(resolved_u8(255, 0, 0, 0.25)))),
         );
         let markup = styled_to_markup(content, &env, true);
         assert_eq!(
@@ -545,7 +545,7 @@ mod tests {
         let mut content = StyledStr::from("");
         content.push(
             "hi",
-            Style::default().background(Color::new(resolved_u8(0, 128, 0, 0.5))),
+            Style::default().background(Color::new(Working(resolved_u8(0, 128, 0, 0.5)))),
         );
         let markup = styled_to_markup(content, &env, true);
         assert_eq!(
