@@ -11,7 +11,9 @@ use executor_core::{
 use gtk4::Application;
 use gtk4::prelude::*;
 use native_executor::NativeExecutor;
-use waterui::app::{App, AppParts, LastWindowPolicy};
+use waterui::app::{
+    App, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost, TerminationKind,
+};
 use waterui_core::{Environment, View};
 
 use crate::renderer::GtkRenderer;
@@ -136,6 +138,76 @@ fn install_app_icon(app_id: &str, resources: &waterui_core::ResourceContext) {
     }
 }
 
+/// The runner's answer channel for the termination machine.
+///
+/// GTK holds no shutdown veto, so an allowed quit ends the application
+/// outright and a refused one leaves it untouched.
+struct GtkTerminationHost {
+    app: Application,
+}
+
+impl TerminationHost for GtkTerminationHost {
+    fn terminate(&self) {
+        self.app.quit();
+    }
+
+    fn refuse(&self) {}
+}
+
+/// The window count every quit path checks: the windows GTK reports plus
+/// the mounts still in flight.
+///
+/// `window_removed` can fire while another window is still mounting — a
+/// `conditional_window` swap closes its window before the replacement's
+/// `GpuRuntime` finishes its `await` — so an empty `app.windows()` may end
+/// the run only once no mount is pending either. Hydrolysis keeps the same
+/// count as `windows.len() + pending_windows.len()`.
+struct WindowGate {
+    app: Application,
+    termination: TerminationHandle,
+    last_window: LastWindowPolicy,
+    pending: std::cell::Cell<usize>,
+}
+
+impl WindowGate {
+    /// Files a required termination when the run has nothing left — no
+    /// window mapped, no mount in flight — under
+    /// [`LastWindowPolicy::Quit`]. Called on every event that can empty the
+    /// set: a window leaving, a mount finishing without a window, a
+    /// windowless launch.
+    fn request_if_no_windows(&self) {
+        if self.last_window == LastWindowPolicy::Quit
+            && self.pending.get() == 0
+            && self.app.windows().is_empty()
+        {
+            self.termination.request(TerminationKind::Required);
+        }
+    }
+
+    /// Counts a mount in flight; the returned guard releases it on drop,
+    /// whether the window presents or the mount's task dies first.
+    fn track_mount(self: &std::rc::Rc<Self>) -> PendingMount {
+        self.pending.set(self.pending.get() + 1);
+        PendingMount {
+            gate: std::rc::Rc::clone(self),
+        }
+    }
+}
+
+/// One in-flight window mount a [`WindowGate`] waits on; dropping it
+/// releases the count and re-checks the run for emptiness — a mount that
+/// ended without a mapped window still ends it.
+struct PendingMount {
+    gate: std::rc::Rc<WindowGate>,
+}
+
+impl Drop for PendingMount {
+    fn drop(&mut self) {
+        self.gate.pending.set(self.gate.pending.get() - 1);
+        self.gate.request_if_no_windows();
+    }
+}
+
 /// GTK4 application wrapper for `WaterUI`.
 #[derive(Debug)]
 pub struct GtkApp {
@@ -212,12 +284,15 @@ impl GtkApp {
 
     /// Runs a `WaterUI` `App` as a GTK application.
     ///
-    /// The app's first window is rendered with GTK; an app may declare none.
-    /// The app's [`LastWindowPolicy`] decides what happens once no window is
-    /// open: under [`LastWindowPolicy::Quit`] the application ends with its
-    /// last window, and at startup when it declares none; under
-    /// [`LastWindowPolicy::StayResident`] it holds the GTK application for as
-    /// long as it runs.
+    /// The app's declared windows mount on `activate`; an app may declare
+    /// none. Ending the run is the termination machine's call on every path
+    /// GTK can end one: the `app.quit` action (armed at Ctrl+Q) files a
+    /// cancellable request, `SIGINT`/`SIGTERM`/`SIGHUP` file a required one
+    /// on unix, and under [`LastWindowPolicy::Quit`] so do a windowless
+    /// launch and the last window closing once no mount is still in flight. A
+    /// permanent hold keeps GTK itself from ending the application
+    /// mid-request, so under [`LastWindowPolicy::StayResident`] the run
+    /// just continues with no windows.
     ///
     /// # Panics
     ///
@@ -228,6 +303,7 @@ impl GtkApp {
             windows,
             env,
             last_window,
+            termination,
             ..
         } = waterui_app.into_parts();
         let mut env = env;
@@ -236,121 +312,80 @@ impl GtkApp {
         // component that typesets text itself gets the system's fonts here,
         // once for the application rather than once per view.
         waterui_text::install_system_font_collection(&mut env);
-        // Mounts one WaterUI `Window` as a GTK `ApplicationWindow`, pulling
-        // the parts the mount needs out of the window's own record — every
-        // path that shows a window (the app's declared windows, windows
-        // opened later through the `WindowManager`, a window shown again
-        // after closing) lands here, so `placement` and `activation`
-        // resolve fresh on every show.
-        let mount_window = std::rc::Rc::new({
-            let app = self.app.clone();
-            move |window: &waterui::window::Window, mut env: Environment| {
-                let app = app.clone();
-                let content = window.content.build();
-                let title = window.display_title();
-                let background = window.background.clone();
-                let state = window.state.clone();
-                let attention = window.attention.clone();
-                let style = window.style.clone();
-                // `WindowPlacement` is not `Clone` (it owns `Rc<dyn Fn>`),
-                // but the record stays the owner — the mount clones the
-                // shareable `place` handle and the copyable selector.
-                let placement =
-                    window
-                        .placement
-                        .as_ref()
-                        .map(|placement| waterui::window::WindowPlacement {
-                            monitor: placement.monitor,
-                            place: std::rc::Rc::clone(&placement.place),
-                        });
-                let activation = window.activation;
-                // See the `hold` rationale in `run`: the window takes over
-                // the application reference once it is presented.
-                let hold = app.hold();
-                spawn_local(async move {
-                    let runtime = waterui_graphics::GpuRuntime::new()
-                        .await
-                        .unwrap_or_else(|error| panic!("GTK GPU runtime creation failed: {error}"));
-                    env.insert(runtime);
-                    if let Some(app_id) = app.application_id() {
-                        install_app_icon(
-                            app_id.as_str(),
-                            waterui_core::ResourceContext::from_environment(&env),
-                        );
-                    }
-                    let gtk_window = create_window(&app, "", 800, 600);
-                    crate::theme::install(&mut env, gtk_window.upcast_ref());
-                    install_inspect_gesture(&gtk_window, &env);
-                    // Resolved after the theme is installed: an opaque
-                    // window paints the theme's background colour.
-                    apply_window_background(
-                        &gtk_window,
-                        &waterui::window::resolve_background(&background, &env),
-                    );
-                    crate::window::apply_window_style(&gtk_window, &style);
-                    // Placement resolves its selector now — mount time —
-                    // and only its size applies: GTK4 gives toplevels no
-                    // position API.
-                    if let Some(placement) = placement.as_ref() {
-                        crate::window::apply_window_placement(&gtk_window, placement, &app);
-                    }
-                    crate::window::apply_window_activation(&gtk_window, activation);
-                    crate::window::install_window_state(gtk_window.upcast_ref(), &state);
-                    crate::window::install_attention_settle(gtk_window.upcast_ref(), &attention);
-
-                    let (initial_title, title_guard) = subscribe_then_get(&title, {
-                        let gtk_window = gtk_window.clone();
-                        move |ctx| {
-                            let title_text = ctx.into_value().as_str().to_owned();
-                            let gtk_window = gtk_window.clone();
-                            glib::idle_add_local_once(move || {
-                                gtk_window.set_title(Some(&title_text));
-                            });
-                        }
-                    });
-                    gtk_window.set_title(Some(initial_title.as_str()));
-                    store_watcher_guards(&gtk_window, vec![title_guard]);
-
-                    let mut renderer = GtkRenderer::new();
-                    let widget = renderer.render_any(content, &env);
-                    gtk_window.set_child(Some(&widget));
-                    gtk_window.present();
-                    drop(hold);
-                })
-                .detach();
-            }
+        // `start` installs `Quit` into the env it is handed, and
+        // `Environment` clones are copy-on-write — a clone taken before this
+        // call never sees `Quit` — so it runs before the first clone goes
+        // out. That is still safe this early: `start` spawns nothing
+        // itself, only the hooks' futures need the executor, and no event
+        // can fire before `activate` installs one.
+        let termination = termination.start(
+            &mut env,
+            GtkTerminationHost {
+                app: self.app.clone(),
+            },
+        );
+        let gate = std::rc::Rc::new(WindowGate {
+            app: self.app.clone(),
+            termination,
+            last_window,
+            pending: std::cell::Cell::new(0),
         });
+        // Every path that shows a window lands on the mounter, so
+        // `placement` and `activation` resolve fresh on every show.
+        let mount_window = window_mounter(self.app.clone(), std::rc::Rc::clone(&gate));
         // Windows shown after startup — `conditional_window` cycles, second
         // windows — arrive through the `WindowManager` hook the view tree
-        // calls `Window::show` on.
-        let manager_env = env.clone();
+        // calls `Window::show` on. They mount under the env `activate`
+        // finishes — `Quit`, the inspector, the webview controller and this
+        // `WindowManager` included — so the hook reads it out of a cell
+        // `activate` fills rather than cloning `env` before it is complete.
+        let activate_env = std::rc::Rc::new(std::cell::OnceCell::<Environment>::new());
         env.insert(waterui::window::WindowManager::new({
             let mount_window = std::rc::Rc::clone(&mount_window);
-            move |window| mount_window(&window, manager_env.clone())
+            let activate_env = std::rc::Rc::clone(&activate_env);
+            move |window| {
+                mount_window(
+                    &window,
+                    activate_env
+                        .get()
+                        .expect("WindowManager::show before activate")
+                        .clone(),
+                );
+            }
         }));
         #[cfg(feature = "webview-system")]
         ensure_webview_controller(&mut env);
 
-        // GTK ends the application once nothing holds it — no window, no
-        // hold — which is exactly `Quit`, at startup included. Staying
-        // resident is one hold for as long as the application runs.
-        let _resident = match last_window {
-            LastWindowPolicy::Quit => None,
-            LastWindowPolicy::StayResident => Some(self.app.hold()),
-        };
+        // The termination machine is the single authority for ending the
+        // run: the Ctrl+Q chord, the POSIX termination signals (unix) and
+        // the last window closing under `LastWindowPolicy::Quit` all report
+        // through it. The hold `install_quit_paths` returns keeps GTK from ending
+        // the application itself while a request is in flight — and under
+        // `StayResident` it is also what staying resident means.
+        let _hold = install_quit_paths(&self.app, &gate);
 
-        self.app.connect_activate(move |app| {
-            let inspector = init_main_thread_executors();
-            let _ = app;
-            if windows.is_empty() {
-                return;
-            }
-            let mut env = env.clone();
-            waterui::inspector::install(&mut env, inspector);
-            // Every declared window mounts here; each one's own `placement`
-            // and `activation` apply on its own mount.
-            for window in &windows {
-                mount_window(window, env.clone());
+        self.app.connect_activate({
+            let gate = std::rc::Rc::clone(&gate);
+            move |_| {
+                let inspector = init_main_thread_executors();
+                let mut env = env.clone();
+                waterui::inspector::install(&mut env, inspector);
+                // `WindowManager::show` mounts read this env too. A remote
+                // re-activation re-fires `activate`, which keeps the first
+                // fill — the envs are equivalent.
+                let _ = activate_env.set(env.clone());
+                if windows.is_empty() {
+                    // A `Quit` application that declares no window ends at
+                    // launch, the same required termination the last window
+                    // closing files.
+                    gate.request_if_no_windows();
+                    return;
+                }
+                // Every declared window mounts here; each one's own
+                // `placement` and `activation` apply on its own mount.
+                for window in &windows {
+                    mount_window(window, env.clone());
+                }
             }
         });
 
@@ -361,6 +396,156 @@ impl GtkApp {
     #[must_use]
     pub const fn application(&self) -> &Application {
         &self.app
+    }
+}
+
+/// Mounts one `WaterUI` `Window` as a GTK `ApplicationWindow`, pulling the
+/// parts the mount needs out of the window's own record — every path that
+/// shows a window (the app's declared windows, windows opened later
+/// through the `WindowManager`, a window shown again after closing) lands
+/// here, so `placement` and `activation` resolve fresh on every show.
+fn window_mounter(
+    app: Application,
+    gate: std::rc::Rc<WindowGate>,
+) -> std::rc::Rc<impl Fn(&waterui::window::Window, Environment)> {
+    std::rc::Rc::new(
+        move |window: &waterui::window::Window, mut env: Environment| {
+            // A mount in flight holds the last-window quit decision off —
+            // the run may only end on zero windows once none is pending.
+            let pending = gate.track_mount();
+            let app = app.clone();
+            let content = window.content.build();
+            let title = window.display_title();
+            let background = window.background.clone();
+            let state = window.state.clone();
+            let attention = window.attention.clone();
+            let style = window.style.clone();
+            // `WindowPlacement` is not `Clone` (it owns `Rc<dyn Fn>`), but
+            // the record stays the owner — the mount clones the shareable
+            // `place` handle and the copyable selector.
+            let placement =
+                window
+                    .placement
+                    .as_ref()
+                    .map(|placement| waterui::window::WindowPlacement {
+                        monitor: placement.monitor,
+                        place: std::rc::Rc::clone(&placement.place),
+                    });
+            let activation = window.activation;
+            // See the `hold` rationale in `run`: the window takes over the
+            // application reference once it is presented.
+            let hold = app.hold();
+            spawn_local(async move {
+                let runtime = waterui_graphics::GpuRuntime::new()
+                    .await
+                    .unwrap_or_else(|error| panic!("GTK GPU runtime creation failed: {error}"));
+                env.insert(runtime);
+                if let Some(app_id) = app.application_id() {
+                    install_app_icon(
+                        app_id.as_str(),
+                        waterui_core::ResourceContext::from_environment(&env),
+                    );
+                }
+                let gtk_window = create_window(&app, "", 800, 600);
+                crate::theme::install(&mut env, gtk_window.upcast_ref());
+                install_inspect_gesture(&gtk_window, &env);
+                // Resolved after the theme is installed: an opaque window
+                // paints the theme's background colour.
+                apply_window_background(
+                    &gtk_window,
+                    &waterui::window::resolve_background(&background, &env),
+                );
+                crate::window::apply_window_style(&gtk_window, &style);
+                // Placement resolves its selector now — mount time — and
+                // only its size applies: GTK4 gives toplevels no position
+                // API.
+                if let Some(placement) = placement.as_ref() {
+                    crate::window::apply_window_placement(&gtk_window, placement, &app);
+                }
+                crate::window::apply_window_activation(&gtk_window, activation);
+                crate::window::install_window_state(gtk_window.upcast_ref(), &state);
+                crate::window::install_attention_settle(gtk_window.upcast_ref(), &attention);
+
+                let (initial_title, title_guard) = subscribe_then_get(&title, {
+                    let gtk_window = gtk_window.clone();
+                    move |ctx| {
+                        let title_text = ctx.into_value().as_str().to_owned();
+                        let gtk_window = gtk_window.clone();
+                        glib::idle_add_local_once(move || {
+                            gtk_window.set_title(Some(&title_text));
+                        });
+                    }
+                });
+                gtk_window.set_title(Some(initial_title.as_str()));
+                store_watcher_guards(&gtk_window, vec![title_guard]);
+
+                let mut renderer = GtkRenderer::new();
+                let widget = renderer.render_any(content, &env);
+                gtk_window.set_child(Some(&widget));
+                gtk_window.present();
+                drop(hold);
+                // The mount ends once the window presents — or earlier if
+                // the task dies — and the gate re-checks for emptiness.
+                drop(pending);
+            })
+            .detach();
+        },
+    )
+}
+
+/// Wires GTK's quit paths into the termination machine.
+///
+/// The `app.quit` action — armed at Ctrl+Q, reachable from any shell or
+/// portal that triggers it — files the same cancellable request a
+/// `MenuItem::Quit` row files; `SIGINT`, `SIGTERM` and `SIGHUP` file a
+/// required one on unix; and the last window closing under
+/// `LastWindowPolicy::Quit` files a required one once no mount is still in
+/// flight. The returned hold
+/// must outlive the run: without it GTK ends the application the moment no
+/// window remains, cutting an in-flight question or `on_terminate` short —
+/// and under `StayResident` it is also what staying resident means.
+fn install_quit_paths(
+    app: &Application,
+    gate: &std::rc::Rc<WindowGate>,
+) -> gtk4::gio::ApplicationHoldGuard {
+    let hold = app.hold();
+    app.connect_window_removed({
+        let gate = std::rc::Rc::clone(gate);
+        move |_, _| gate.request_if_no_windows()
+    });
+    let quit = gtk4::gio::SimpleAction::new("quit", None);
+    quit.connect_activate({
+        let termination = gate.termination.clone();
+        move |_, _| termination.request(TerminationKind::Cancellable)
+    });
+    app.add_action(&quit);
+    app.set_accels_for_action("app.quit", &["<Ctrl>q"]);
+    install_termination_signals(&gate.termination);
+    hold
+}
+
+/// Turns `SIGINT`, `SIGTERM` and `SIGHUP` into a required termination
+/// request, so `on_terminate` gets its run no matter which way a desktop
+/// shell or session manager stops the process. A signal repeating while a
+/// request is in flight exits immediately — the graceful path runs on the
+/// very loop a hang would block, so a second signal has to mean "stop
+/// asking", the same shape hydrolysis's `TerminationRequests` keeps.
+fn install_termination_signals(termination: &TerminationHandle) {
+    let requested = std::rc::Rc::new(std::cell::Cell::new(false));
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        let requested = std::rc::Rc::clone(&requested);
+        let termination = termination.clone();
+        let _ = glib_unix::unix_signal_add_local(signal, move || {
+            if requested.replace(true) {
+                tracing::warn!(
+                    "waterui-gtk: termination signal repeated, exiting without runtime teardown"
+                );
+                // 128 + signum is the shell's death-by-signal convention.
+                std::process::exit(128 + signal);
+            }
+            termination.request(TerminationKind::Required);
+            glib::ControlFlow::Continue
+        });
     }
 }
 

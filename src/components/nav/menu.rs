@@ -5,7 +5,10 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{MenuButton, Popover, Widget};
 use nami::Signal;
-use waterui_controls::menu::{ResolvedMenu, ResolvedMenuItem};
+use waterui::app::Quit;
+use waterui_controls::menu::{
+    CommandExt as _, ResolvedCommand, ResolvedMenu, ResolvedMenuItem, Shortcut,
+};
 use waterui_core::{Environment, Native};
 
 use crate::component::GtkComponent;
@@ -66,31 +69,12 @@ pub(crate) fn append_menu_items(
     for item in items {
         match item {
             ResolvedMenuItem::Command(command) => {
-                let button = gtk4::Button::with_label(&command.label.content.snapshot().to_plain());
-                button.add_css_class("flat");
-                button.set_sensitive(!command.disabled.snapshot());
-
-                let disabled_guard = command.disabled.watch({
-                    let button = button.clone();
-                    move |ctx: nami::watcher::Context<bool>| {
-                        let disabled = ctx.into_value();
-                        let button = button.clone();
-                        glib::idle_add_local_once(move || {
-                            button.set_sensitive(!disabled);
-                        });
-                    }
-                });
-
-                let action = command.action.clone();
-                let env = env.clone();
-                let on_activate = on_activate.clone();
-                button.connect_clicked(move |_| {
-                    let () = action.call(&env);
-                    on_activate();
-                });
-
-                store_watcher_guards(&button, vec![disabled_guard]);
-                list.append(&button);
+                append_command_button(list, &command, env, on_activate);
+            }
+            ResolvedMenuItem::Quit => {
+                if let Some(command) = quit_command(env) {
+                    append_command_button(list, &command, env, on_activate);
+                }
             }
             ResolvedMenuItem::Divider => {
                 list.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
@@ -123,4 +107,54 @@ pub(crate) fn append_menu_items(
             }
         }
     }
+}
+
+/// Renders one resolved command as a flat labelled button; clicking runs
+/// the resolved action and pops the menu down.
+fn append_command_button(
+    list: &gtk4::Box,
+    command: &ResolvedCommand,
+    env: &Environment,
+    on_activate: &Rc<dyn Fn()>,
+) {
+    let button = gtk4::Button::new();
+    button.add_css_class("flat");
+    button.set_label(&command.label.content.snapshot().to_plain());
+    button.set_sensitive(!command.disabled.snapshot());
+
+    let disabled_guard = command.disabled.watch({
+        let button = button.clone();
+        move |ctx: nami::watcher::Context<bool>| {
+            let disabled = ctx.into_value();
+            let button = button.clone();
+            glib::idle_add_local_once(move || {
+                button.set_sensitive(!disabled);
+            });
+        }
+    });
+
+    let action = command.action.clone();
+    let env = env.clone();
+    let on_activate = on_activate.clone();
+    button.connect_clicked(move |_| {
+        let () = action.call(&env);
+        on_activate();
+    });
+
+    store_watcher_guards(&button, vec![disabled_guard]);
+    list.append(&button);
+}
+
+/// The platform's Quit row for a declared `MenuItem::Quit` — the platform's
+/// word, the Ctrl+Q chord, and a cancellable request through `Quit`, so
+/// `App::on_quit_request` still decides. `None` where `env` has no `Quit`:
+/// hosts without an application quit never install one.
+fn quit_command(env: &Environment) -> Option<ResolvedCommand> {
+    let quit = env.get::<Quit>()?.clone();
+    Some(
+        "Quit"
+            .action(move || quit.request())
+            .shortcut(Shortcut::new("q").command())
+            .resolve(env),
+    )
 }
