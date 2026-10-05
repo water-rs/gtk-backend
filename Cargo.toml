@@ -51,6 +51,10 @@ gtk4 = { version = "0.11", features = ["v4_14"] }
 waterui-assets = { version = "0.5.0" }
 gdk4 = { version = "0.11", features = ["v4_14"] }
 glib = "0.22"
+# The unix-signal source API (`unix_signal_add_local`) lives in `glib-unix`,
+# not `glib`, since gtk-rs 0.22. Linux-only like `glib`: on other targets
+# `glib-unix-sys` probes a system GLib that is not there.
+glib-unix = "0.22"
 # Chromium's own physical-key table, used to name a GDK hardware keycode in the
 # W3C vocabulary the surface input events carry.
 keycode = "1.0"
