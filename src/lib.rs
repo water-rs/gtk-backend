@@ -32,6 +32,8 @@ pub mod components;
 #[cfg(target_os = "linux")]
 pub mod layout;
 #[cfg(target_os = "linux")]
+mod menu_shortcuts;
+#[cfg(target_os = "linux")]
 pub mod renderer;
 // Plain geometry with no GTK in it, so it builds and tests on every host.
 pub mod shape_geometry;
@@ -54,6 +56,8 @@ pub mod window;
 pub use app::GtkApp;
 #[cfg(target_os = "linux")]
 pub use app::init_main_thread_executors;
+#[cfg(target_os = "linux")]
+pub use menu_shortcuts::install_menu_shortcuts;
 #[cfg(target_os = "linux")]
 pub use renderer::GtkRenderer;
 

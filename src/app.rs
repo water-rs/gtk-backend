@@ -16,6 +16,7 @@ use waterui::app::{
 };
 use waterui_core::{Environment, View};
 
+use crate::menu_shortcuts::{arm_menu_bar, install_menu_shortcuts};
 use crate::renderer::GtkRenderer;
 use crate::util::{store_watcher_guards, subscribe_then_get};
 #[cfg(feature = "webview-system")]
@@ -382,6 +383,7 @@ impl GtkApp {
                 let window = create_window(&app, "WaterUI App", 800, 600);
                 crate::theme::install(&mut env, window.upcast_ref());
                 install_inspect_gesture(&window, &env);
+                install_menu_shortcuts(window.upcast_ref(), &mut env);
                 let mut renderer = GtkRenderer::new();
                 let widget = renderer.render(view, &env);
                 window.set_child(Some(&widget));
@@ -398,17 +400,21 @@ impl GtkApp {
     ///
     /// The app's declared windows mount on `activate`; an app may declare
     /// none. Ending the run is the termination machine's call on every path
-    /// GTK can end one: the `app.quit` action (armed at Ctrl+Q) files a
-    /// cancellable request, `SIGINT`/`SIGTERM`/`SIGHUP` file a required one
-    /// on unix, and under [`LastWindowPolicy::Quit`] so do a windowless
-    /// launch and the last window closing once no mount is still in flight.
-    /// With a termination hook set, the application registers with the
-    /// session manager: a session asking to end files a cancellable request
-    /// and holds the logout while `on_quit_request` decides, and a session
-    /// that ends regardless files a required one. A
-    /// permanent hold keeps GTK itself from ending the application
-    /// mid-request, so under [`LastWindowPolicy::StayResident`] the run
-    /// just continues with no windows.
+    /// GTK can end one: the `app.quit` action files a cancellable request,
+    /// `SIGINT`/`SIGTERM`/`SIGHUP` file a required one on unix, and under
+    /// [`LastWindowPolicy::Quit`] so do a windowless launch and the last
+    /// window closing once no mount is still in flight. With a termination
+    /// hook set, the application registers with the session manager: a
+    /// session asking to end files a cancellable request and holds the
+    /// logout while `on_quit_request` decides, and a session that ends
+    /// regardless files a required one. A permanent hold keeps GTK itself
+    /// from ending the application mid-request, so under
+    /// [`LastWindowPolicy::StayResident`] the run just continues with no
+    /// windows.
+    ///
+    /// The app's `menu_bar` draws no surface on Linux; its command chords —
+    /// Ctrl+Q included, where it declares `MenuItem::Quit` — are armed in
+    /// every window it mounts.
     ///
     /// # Panics
     ///
@@ -417,10 +423,10 @@ impl GtkApp {
     pub fn run_app(self, waterui_app: App) -> i32 {
         let AppParts {
             windows,
+            menu_bar,
             env,
             last_window,
             termination,
-            ..
         } = waterui_app.into_parts();
         let mut env = env;
         waterui_core::install_application_resources(&mut env);
@@ -452,7 +458,7 @@ impl GtkApp {
         });
         // Every path that shows a window lands on the mounter, so
         // `placement` and `activation` resolve fresh on every show.
-        let mount_window = window_mounter(self.app.clone(), std::rc::Rc::clone(&gate));
+        let mount_window = window_mounter(self.app.clone(), std::rc::Rc::clone(&gate), menu_bar);
         // Windows shown after startup — `conditional_window` cycles, second
         // windows — arrive through the `WindowManager` hook the view tree
         // calls `Window::show` on. They mount under the env `activate`
@@ -477,7 +483,7 @@ impl GtkApp {
         ensure_webview_controller(&mut env);
 
         // The termination machine is the single authority for ending the
-        // run: the Ctrl+Q chord, the POSIX termination signals (unix) and
+        // run: the `app.quit` action, the POSIX termination signals (unix) and
         // the last window closing under `LastWindowPolicy::Quit` all report
         // through it. The hold `install_quit_paths` returns keeps GTK from ending
         // the application itself while a request is in flight — and under
@@ -523,10 +529,12 @@ impl GtkApp {
 /// parts the mount needs out of the window's own record — every path that
 /// shows a window (the app's declared windows, windows opened later
 /// through the `WindowManager`, a window shown again after closing) lands
-/// here, so `placement` and `activation` resolve fresh on every show.
+/// here, so `placement` and `activation` resolve fresh on every show. Each
+/// mounted window arms the app's `menu_bar` chords in its own registry.
 fn window_mounter(
     app: Application,
     gate: std::rc::Rc<WindowGate>,
+    menu_bar: nami::Computed<Vec<waterui_controls::menu::Menu>>,
 ) -> std::rc::Rc<impl Fn(&waterui::window::Window, Environment)> {
     std::rc::Rc::new(
         move |window: &waterui::window::Window, mut env: Environment| {
@@ -552,6 +560,7 @@ fn window_mounter(
                         place: std::rc::Rc::clone(&placement.place),
                     });
             let activation = window.activation;
+            let menu_bar = menu_bar.clone();
             // See the `hold` rationale in `run`: the window takes over the
             // application reference once it is presented.
             let hold = app.hold();
@@ -567,6 +576,10 @@ fn window_mounter(
                     );
                 }
                 let gtk_window = create_window(&app, "", 800, 600);
+                // The menu bar's source outlives every mounted menu, so it
+                // keeps the env from before the window's values join it;
+                // its actions run layered over the window's env.
+                let app_env = env.clone();
                 crate::theme::install(&mut env, gtk_window.upcast_ref());
                 install_inspect_gesture(&gtk_window, &env);
                 // Resolved after the theme is installed: an opaque window
@@ -599,6 +612,8 @@ fn window_mounter(
                 gtk_window.set_title(Some(initial_title.as_str()));
                 store_watcher_guards(&gtk_window, vec![title_guard]);
 
+                install_menu_shortcuts(gtk_window.upcast_ref(), &mut env);
+                arm_menu_bar(&env, &menu_bar, &app_env);
                 let mut renderer = GtkRenderer::new();
                 let widget = renderer.render_any(content, &env);
                 gtk_window.set_child(Some(&widget));
@@ -615,13 +630,12 @@ fn window_mounter(
 
 /// Wires GTK's quit paths into the termination machine.
 ///
-/// The `app.quit` action — armed at Ctrl+Q, reachable from any shell or
-/// portal that triggers it — files the same cancellable request a
-/// `MenuItem::Quit` row files; `SIGINT`, `SIGTERM` and `SIGHUP` file a
-/// required one on unix; and the last window closing under
-/// `LastWindowPolicy::Quit` files a required one once no mount is still in
-/// flight. The returned hold
-/// must outlive the run: without it GTK ends the application the moment no
+/// The `app.quit` action — reachable from any shell or portal that triggers
+/// it — files the same cancellable request a `MenuItem::Quit` row or its
+/// chord files; `SIGINT`, `SIGTERM` and `SIGHUP` file a required one on
+/// unix; and the last window closing under `LastWindowPolicy::Quit` files a
+/// required one once no mount is still in flight. The returned hold must
+/// outlive the run: without it GTK ends the application the moment no
 /// window remains, cutting an in-flight question or `on_terminate` short —
 /// and under `StayResident` it is also what staying resident means.
 fn install_quit_paths(
@@ -639,7 +653,6 @@ fn install_quit_paths(
         move |_, _| termination.request(TerminationKind::Cancellable)
     });
     app.add_action(&quit);
-    app.set_accels_for_action("app.quit", &["<Ctrl>q"]);
     install_termination_signals(&gate.termination);
     hold
 }

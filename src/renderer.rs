@@ -77,6 +77,7 @@ use crate::component::GtkComponent;
 use crate::components::graphics::clip_shape_widget::WuiClipShape;
 use crate::components::menu::rebuild_menu_popover;
 use crate::layout::proposal::{note_reported_axis, set_layout_priority, transparent_to_content};
+use crate::menu_shortcuts::arm_while_open;
 use crate::util::{ScopedCss, store_watcher_guard, subscribe_then_get};
 
 pub(crate) const CSS_CLASS_DYNAMIC_RANGE_SDR: &str = "waterui-dynamic-range-sdr";
@@ -1536,13 +1537,15 @@ impl GtkRenderer {
                         }
                         if let Some(existing) = popover_state.borrow_mut().take() {
                             existing.popdown();
+                            existing.unparent();
                         }
                         let popover = gtk4::Popover::new();
                         popover.set_has_arrow(true);
                         popover.set_parent(&widget);
                         popover
                             .set_pointing_to(Some(&gdk4::Rectangle::new(x as i32, y as i32, 1, 1)));
-                        rebuild_menu_popover(&popover, entries, &env);
+                        rebuild_menu_popover(&popover, entries.clone(), &env);
+                        arm_while_open(&popover, entries, &env);
                         popover.popup();
                         *popover_state.borrow_mut() = Some(popover);
                     }
