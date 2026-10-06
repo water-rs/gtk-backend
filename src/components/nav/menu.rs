@@ -12,6 +12,7 @@ use waterui_controls::menu::{
 use waterui_core::{Environment, Native};
 
 use crate::component::GtkComponent;
+use crate::menu_shortcuts::{arm_while_mapped, dispatch_in_popover, shortcut_label};
 use crate::renderer::GtkRenderer;
 use crate::util::{store_watcher_guard, store_watcher_guards};
 
@@ -25,8 +26,10 @@ impl GtkComponent for Native<ResolvedMenu> {
 
         let popover = Popover::new();
         button.set_popover(Some(&popover));
+        dispatch_in_popover(&popover, env);
 
         rebuild_menu_popover(&popover, menu.items.snapshot(), env);
+        arm_while_mapped(&button, menu.items.clone(), env);
 
         let guard = menu.items.watch({
             let popover = popover;
@@ -88,6 +91,7 @@ pub(crate) fn append_menu_items(
 
                 let popover = Popover::new();
                 button.set_popover(Some(&popover));
+                dispatch_in_popover(&popover, env);
                 rebuild_menu_popover(&popover, menu.items.snapshot(), env);
 
                 let guard = menu.items.watch({
@@ -109,8 +113,9 @@ pub(crate) fn append_menu_items(
     }
 }
 
-/// Renders one resolved command as a flat labelled button; clicking runs
-/// the resolved action and pops the menu down.
+/// Renders one resolved command as a flat labelled button, trailed by the
+/// accelerator label GTK prints for its shortcut; clicking runs the resolved
+/// action and pops the menu down.
 fn append_command_button(
     list: &gtk4::Box,
     command: &ResolvedCommand,
@@ -119,7 +124,29 @@ fn append_command_button(
 ) {
     let button = gtk4::Button::new();
     button.add_css_class("flat");
-    button.set_label(&command.label.content.snapshot().to_plain());
+    let title = command.label.content.snapshot().to_plain();
+    match &command.shortcut {
+        None => button.set_label(&title),
+        Some(shortcut) => {
+            let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 24);
+            let title = gtk4::Label::new(Some(&title));
+            title.set_xalign(0.0);
+            title.set_hexpand(true);
+            let accelerator_text = shortcut_label(shortcut);
+            let accelerator = gtk4::Label::new(Some(&accelerator_text));
+            accelerator.set_xalign(1.0);
+            accelerator.add_css_class("dim-label");
+            row.append(&title);
+            row.append(&accelerator);
+            button.set_child(Some(&row));
+            // As GtkModelButton does: the title alone names the row, and
+            // the accelerator is announced as its key shortcut.
+            button.update_relation(&[gtk4::accessible::Relation::LabelledBy(
+                &[title.upcast_ref()],
+            )]);
+            button.update_property(&[gtk4::accessible::Property::KeyShortcuts(&accelerator_text)]);
+        }
+    }
     button.set_sensitive(!command.disabled.snapshot());
 
     let disabled_guard = command.disabled.watch({
@@ -149,7 +176,7 @@ fn append_command_button(
 /// word, the Ctrl+Q chord, and a cancellable request through `Quit`, so
 /// `App::on_quit_request` still decides. `None` where `env` has no `Quit`:
 /// hosts without an application quit never install one.
-fn quit_command(env: &Environment) -> Option<ResolvedCommand> {
+pub(crate) fn quit_command(env: &Environment) -> Option<ResolvedCommand> {
     let quit = env.get::<Quit>()?.clone();
     Some(
         "Quit"

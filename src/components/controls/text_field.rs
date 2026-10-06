@@ -13,6 +13,7 @@ use waterui_text::styled::StyledStr;
 
 use crate::component::GtkComponent;
 use crate::components::menu::rebuild_menu_popover;
+use crate::menu_shortcuts::arm_while_open;
 use crate::renderer::{GtkRenderer, mark_focus_anchor};
 use crate::util::store_watcher_guards;
 
@@ -151,12 +152,13 @@ fn install_selection_menu(
             }
 
             let popover = gtk4::Popover::new();
-            rebuild_menu_popover(&popover, items, &env);
+            rebuild_menu_popover(&popover, items.clone(), &env);
             popover.set_has_arrow(true);
             popover.set_autohide(true);
             popover.set_parent(&entry);
             let rect = gdk4::Rectangle::new(x as i32, y as i32, 1, 1);
             popover.set_pointing_to(Some(&rect));
+            arm_while_open(&popover, items, &env);
             popover.popup();
             *popover_state.borrow_mut() = Some(popover);
 
