@@ -138,20 +138,132 @@ fn install_app_icon(app_id: &str, resources: &waterui_core::ResourceContext) {
     }
 }
 
-/// The runner's answer channel for the termination machine.
-///
-/// GTK holds no shutdown veto, so an allowed quit ends the application
-/// outright and a refused one leaves it untouched.
-struct GtkTerminationHost {
-    app: Application,
+/// What the session-end paths ask of the `GtkApplication`, behind a trait
+/// so the transitions they drive can be exercised without a session
+/// manager.
+trait SessionApplication: 'static {
+    /// `gtk_application_inhibit` for logging out, with `reason` shown by the
+    /// session manager; the cookie GTK returns, `0` when it refused.
+    fn inhibit_logout(&self, reason: &str) -> u32;
+    /// `gtk_application_uninhibit` with a cookie `inhibit_logout` returned.
+    fn uninhibit(&self, cookie: u32);
+    /// Ends the GTK run loop.
+    fn quit(&self);
 }
 
-impl TerminationHost for GtkTerminationHost {
+impl SessionApplication for Application {
+    fn inhibit_logout(&self, reason: &str) -> u32 {
+        GtkApplicationExt::inhibit(
+            self,
+            None::<&gtk4::Window>,
+            gtk4::ApplicationInhibitFlags::LOGOUT,
+            Some(reason),
+        )
+    }
+
+    fn uninhibit(&self, cookie: u32) {
+        GtkApplicationExt::uninhibit(self, cookie);
+    }
+
+    fn quit(&self) {
+        ApplicationExt::quit(self);
+    }
+}
+
+/// The reason the session manager shows while the logout is held for
+/// `on_quit_request`.
+const LOGOUT_INHIBIT_REASON: &str = "The application is finishing up";
+
+/// What a session ending shares with the runner's [`TerminationHost`].
+///
+/// GTK reports a session that asks to end as `query-end`, and holds the
+/// logout only for as long as an inhibit stands. A session that ends
+/// regardless — `EndSession` or `Stop` from the session manager, the
+/// portal's `ENDING` state — has no signal of its own: GTK calls
+/// `g_application_quit`, and the `shutdown` that follows the run loop is the
+/// first place the runner hears of it.
+struct SessionEnd<A> {
+    app: A,
+    /// The logout inhibit `query_end` took, held until the machine decides.
+    inhibit: std::cell::Cell<Option<NonZeroU32>>,
+    /// Whether the machine reported `terminate`.
+    terminated: std::cell::Cell<bool>,
+}
+
+impl<A: SessionApplication> SessionEnd<A> {
+    const fn new(app: A) -> Self {
+        Self {
+            app,
+            inhibit: std::cell::Cell::new(None),
+            terminated: std::cell::Cell::new(false),
+        }
+    }
+
+    /// `query-end`: the session asks whether it may end. Inhibits the logout
+    /// and files a cancellable request; the inhibit stands until the machine
+    /// refuses or terminates. A repeated `query-end` while one is held keeps
+    /// the one inhibit — the machine drops the repeated request.
+    fn query_end(&self, termination: &TerminationHandle) {
+        if self.inhibit.get().is_none() {
+            let cookie = self.app.inhibit_logout(LOGOUT_INHIBIT_REASON);
+            if let Some(cookie) = NonZeroU32::new(cookie) {
+                self.inhibit.set(Some(cookie));
+            } else {
+                tracing::error!(
+                    "waterui-gtk: the session manager refused the logout inhibit, so the \
+                     session can end before on_quit_request answers"
+                );
+            }
+        }
+        termination.request(TerminationKind::Cancellable);
+    }
+
+    /// Lifts the logout inhibit, if one is held.
+    fn release(&self) {
+        if let Some(cookie) = self.inhibit.take() {
+            self.app.uninhibit(cookie.get());
+        }
+    }
+
+    /// The machine reported `terminate`: the inhibit is moot and the run
+    /// ends.
     fn terminate(&self) {
+        self.release();
+        self.terminated.set(true);
         self.app.quit();
     }
 
-    fn refuse(&self) {}
+    /// `shutdown`: the run loop ended. Unless the machine ended it, GTK did,
+    /// because the session is ending — so this files a required request and
+    /// drives the main context until the machine reports `terminate`, which
+    /// is what proves `on_terminate` finished before the process exits.
+    fn shutdown(&self, termination: &TerminationHandle) {
+        if self.terminated.get() {
+            return;
+        }
+        termination.request(TerminationKind::Required);
+        let context = glib::MainContext::default();
+        while !self.terminated.get() {
+            context.iteration(true);
+        }
+    }
+}
+
+/// The runner's answer channel for the termination machine. A refused quit
+/// lifts the logout inhibit a `query-end` took; an allowed one ends the
+/// application.
+struct GtkTerminationHost<A> {
+    session: std::rc::Rc<SessionEnd<A>>,
+}
+
+impl<A: SessionApplication> TerminationHost for GtkTerminationHost<A> {
+    fn terminate(&self) {
+        self.session.terminate();
+    }
+
+    fn refuse(&self) {
+        self.session.release();
+    }
 }
 
 /// The window count every quit path checks: the windows GTK reports plus
@@ -289,7 +401,11 @@ impl GtkApp {
     /// GTK can end one: the `app.quit` action (armed at Ctrl+Q) files a
     /// cancellable request, `SIGINT`/`SIGTERM`/`SIGHUP` file a required one
     /// on unix, and under [`LastWindowPolicy::Quit`] so do a windowless
-    /// launch and the last window closing once no mount is still in flight. A
+    /// launch and the last window closing once no mount is still in flight.
+    /// With a termination hook set, the application registers with the
+    /// session manager: a session asking to end files a cancellable request
+    /// and holds the logout while `on_quit_request` decides, and a session
+    /// that ends regardless files a required one. A
     /// permanent hold keeps GTK itself from ending the application
     /// mid-request, so under [`LastWindowPolicy::StayResident`] the run
     /// just continues with no windows.
@@ -318,12 +434,16 @@ impl GtkApp {
         // out. That is still safe this early: `start` spawns nothing
         // itself, only the hooks' futures need the executor, and no event
         // can fire before `activate` installs one.
+        let session = std::rc::Rc::new(SessionEnd::new(self.app.clone()));
         let termination = termination.start(
             &mut env,
             GtkTerminationHost {
-                app: self.app.clone(),
+                session: std::rc::Rc::clone(&session),
             },
         );
+        if termination.has_hooks() {
+            install_session_end(&self.app, &session, &termination);
+        }
         let gate = std::rc::Rc::new(WindowGate {
             app: self.app.clone(),
             termination,
@@ -524,6 +644,29 @@ fn install_quit_paths(
     hold
 }
 
+/// Registers the application with the session manager and routes a session
+/// ending through the termination machine, see [`SessionEnd`]. Registration
+/// has to precede the application's own, so this runs before `run`.
+fn install_session_end(
+    app: &Application,
+    session: &std::rc::Rc<SessionEnd<Application>>,
+    termination: &TerminationHandle,
+) {
+    app.set_register_session(true);
+    app.connect_query_end({
+        let session = std::rc::Rc::clone(session);
+        let termination = termination.clone();
+        move |_| session.query_end(&termination)
+    });
+    // Connected without `after`, the handler runs before `GtkApplication`'s
+    // own `shutdown` drops its session registration and `app` actions.
+    app.connect_shutdown({
+        let session = std::rc::Rc::clone(session);
+        let termination = termination.clone();
+        move |_| session.shutdown(&termination)
+    });
+}
+
 /// Turns `SIGINT`, `SIGTERM` and `SIGHUP` into a required termination
 /// request, so `on_terminate` gets its run no matter which way a desktop
 /// shell or session manager stops the process. A signal repeating while a
@@ -557,6 +700,8 @@ impl Default for GtkApp {
 
 #[cfg(test)]
 mod tests {
+    use waterui::app::QuitReply;
+
     use super::*;
 
     /// A staged bundle puts `icons/` beside `waterui_assets/`; the install
@@ -587,5 +732,197 @@ mod tests {
                 .contains(&icons_dir)
         );
         std::fs::remove_dir_all(&staging).ok();
+    }
+
+    /// A call the session-end paths make, in the order they make it.
+    #[derive(Debug, PartialEq, Eq)]
+    enum SessionCall {
+        Inhibit(String),
+        Uninhibit(u32),
+        Quit,
+        QuitRequest,
+        Terminate,
+    }
+
+    const FAKE_COOKIE: u32 = 7;
+
+    /// A `GtkApplication` stand-in: grants every logout inhibit and records
+    /// what was asked of it, alongside the hooks' own calls.
+    #[derive(Clone, Default)]
+    struct FakeSession {
+        calls: std::rc::Rc<std::cell::RefCell<Vec<SessionCall>>>,
+    }
+
+    impl FakeSession {
+        fn record(&self, call: SessionCall) {
+            self.calls.borrow_mut().push(call);
+        }
+
+        fn take(&self) -> Vec<SessionCall> {
+            self.calls.take()
+        }
+    }
+
+    impl SessionApplication for FakeSession {
+        fn inhibit_logout(&self, reason: &str) -> u32 {
+            self.record(SessionCall::Inhibit(reason.to_owned()));
+            FAKE_COOKIE
+        }
+
+        fn uninhibit(&self, cookie: u32) {
+            self.record(SessionCall::Uninhibit(cookie));
+        }
+
+        fn quit(&self) {
+            self.record(SessionCall::Quit);
+        }
+    }
+
+    /// An app whose `on_quit_request` answers what is sent on the returned
+    /// channel, and whose `on_terminate` needs further main-context
+    /// iterations to finish, so a caller that returns early is caught.
+    fn hooked_app(session: &FakeSession) -> (App, async_channel::Sender<QuitReply>) {
+        let (replies, answer) = async_channel::unbounded();
+        let app = App::new_with_windows(Vec::new(), Environment::new())
+            .on_quit_request({
+                let session = session.clone();
+                move || {
+                    session.record(SessionCall::QuitRequest);
+                    let answer = answer.clone();
+                    async move { answer.recv().await.expect("the test holds the sender") }
+                }
+            })
+            .on_terminate({
+                let session = session.clone();
+                move || async move {
+                    glib::timeout_future(std::time::Duration::from_millis(20)).await;
+                    session.record(SessionCall::Terminate);
+                }
+            });
+        (app, replies)
+    }
+
+    /// Starts the machine against `session` the way `run_app` starts it
+    /// against the `GtkApplication`.
+    fn start(
+        app: App,
+        session: FakeSession,
+    ) -> (std::rc::Rc<SessionEnd<FakeSession>>, TerminationHandle) {
+        let _ = try_init_local_executor(GtkMainThreadExecutor);
+        let session_end = std::rc::Rc::new(SessionEnd::new(session));
+        let termination = app.into_parts().termination.start(
+            &mut Environment::new(),
+            GtkTerminationHost {
+                session: std::rc::Rc::clone(&session_end),
+            },
+        );
+        (session_end, termination)
+    }
+
+    /// Runs the default main context until `done`, as GTK's run loop would.
+    fn iterate_until(done: impl Fn() -> bool) {
+        let context = glib::MainContext::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !done() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the termination machine did not settle within 5s"
+            );
+            context.iteration(true);
+        }
+    }
+
+    fn inhibit() -> SessionCall {
+        SessionCall::Inhibit(LOGOUT_INHIBIT_REASON.to_owned())
+    }
+
+    /// `query-end` holds the logout while `on_quit_request` decides; a
+    /// cancel lifts the hold without quitting, and the next `query-end`
+    /// asks afresh.
+    #[test]
+    fn query_end_holds_the_logout_until_a_cancel_lifts_it() {
+        let session = FakeSession::default();
+        let (app, replies) = hooked_app(&session);
+        let (session_end, termination) = start(app, session.clone());
+
+        session_end.query_end(&termination);
+        iterate_until(|| session.calls.borrow().contains(&SessionCall::QuitRequest));
+        session_end.query_end(&termination);
+        assert_eq!(session.take(), [inhibit(), SessionCall::QuitRequest]);
+        assert_eq!(
+            session_end.inhibit.get(),
+            NonZeroU32::new(FAKE_COOKIE),
+            "the logout stays held while the question is open"
+        );
+
+        replies.try_send(QuitReply::Cancel).unwrap();
+        iterate_until(|| session_end.inhibit.get().is_none());
+        assert_eq!(session.take(), [SessionCall::Uninhibit(FAKE_COOKIE)]);
+        assert!(!session_end.terminated.get());
+
+        session_end.query_end(&termination);
+        iterate_until(|| session.calls.borrow().contains(&SessionCall::QuitRequest));
+        assert_eq!(session.take(), [inhibit(), SessionCall::QuitRequest]);
+    }
+
+    /// A quit answer keeps the logout held through `on_terminate`, then
+    /// lifts it and ends the run; the `shutdown` that follows files nothing.
+    #[test]
+    fn query_end_answered_quit_terminates_before_lifting_the_hold() {
+        let session = FakeSession::default();
+        let (app, replies) = hooked_app(&session);
+        let (session_end, termination) = start(app, session.clone());
+
+        session_end.query_end(&termination);
+        replies.try_send(QuitReply::Quit).unwrap();
+        iterate_until(|| session_end.terminated.get());
+        assert_eq!(
+            session.take(),
+            [
+                inhibit(),
+                SessionCall::QuitRequest,
+                SessionCall::Terminate,
+                SessionCall::Uninhibit(FAKE_COOKIE),
+                SessionCall::Quit,
+            ]
+        );
+
+        session_end.shutdown(&termination);
+        assert_eq!(session.take(), []);
+    }
+
+    /// The session ending while `on_quit_request` decides supersedes the
+    /// question: `shutdown` returns only once `on_terminate` finished.
+    #[test]
+    fn session_end_while_deciding_runs_on_terminate_before_shutdown_returns() {
+        let session = FakeSession::default();
+        let (app, _replies) = hooked_app(&session);
+        let (session_end, termination) = start(app, session.clone());
+
+        session_end.query_end(&termination);
+        iterate_until(|| session.calls.borrow().contains(&SessionCall::QuitRequest));
+        session_end.shutdown(&termination);
+        assert_eq!(
+            session.take(),
+            [
+                inhibit(),
+                SessionCall::QuitRequest,
+                SessionCall::Terminate,
+                SessionCall::Uninhibit(FAKE_COOKIE),
+                SessionCall::Quit,
+            ]
+        );
+    }
+
+    /// A session that ends without asking first — `EndSession` or `Stop`
+    /// with no `query-end` — runs `on_terminate` without the question.
+    #[test]
+    fn session_end_without_query_end_runs_on_terminate_before_shutdown_returns() {
+        let session = FakeSession::default();
+        let (app, _replies) = hooked_app(&session);
+        let (session_end, termination) = start(app, session.clone());
+
+        session_end.shutdown(&termination);
+        assert_eq!(session.take(), [SessionCall::Terminate, SessionCall::Quit]);
     }
 }
