@@ -835,14 +835,15 @@ fn restore_application_icon(window: &ApplicationWindow) {
     }
 }
 
-/// The colour GTK paints behind a window's content, following `background`:
-/// the theme background for an opaque window, the declared colour otherwise,
-/// through both a switch between the two and a change of the colour.
+/// The colour GTK paints behind a window's content, following `background`.
 ///
+/// An opaque window paints the theme background and any other the declared
+/// colour, through both a switch between the two and a change of the colour.
 /// GTK realizes no material: a [`WindowBackground::Material`] draws the
 /// window opaque in the theme's background colour, as
 /// [`WindowBackground::Opaque`] does — the contract of the backends that
 /// realize no material.
+#[must_use]
 pub fn painted_background(
     background: &Binding<WindowBackground>,
     env: &Environment,
