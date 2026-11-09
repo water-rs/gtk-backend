@@ -1,11 +1,10 @@
-//! GL plumbing shared by every wgpu-on-GTK-GL surface in this backend.
+//! GL plumbing for the backend's remaining wgpu-on-GTK-GL surface.
 //!
-//! Both `GpuSurface` (GtkGLArea-owned context) and `AppliedFilter`
-//! (container-owned `GdkGLContext`) adopt an externally created GL context
-//! into wgpu via `wgpu-hal`'s GLES external adapter, which needs the same two
-//! pieces: a symbol resolver that finds GL entry points in the libraries GDK
-//! already loaded, and the format descriptor wgpu wants when it wraps a
-//! foreign framebuffer as a texture.
+//! `FilteredView` adopts its container-owned `GdkGLContext` into wgpu via
+//! `wgpu-hal`'s GLES external adapter, which needs the same two pieces: a
+//! symbol resolver that finds GL entry points in the libraries GDK already
+//! loaded, and the format descriptor wgpu wants when it wraps a foreign
+//! framebuffer as a texture.
 
 use std::ffi::{CString, c_char, c_void};
 

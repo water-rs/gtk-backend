@@ -32,6 +32,8 @@ pub mod components;
 #[cfg(target_os = "linux")]
 pub mod layout;
 #[cfg(target_os = "linux")]
+mod menu_shortcuts;
+#[cfg(target_os = "linux")]
 pub mod renderer;
 // Plain geometry with no GTK in it, so it builds and tests on every host.
 pub mod shape_geometry;
@@ -42,8 +44,8 @@ mod theme;
 pub mod util;
 // The only web engine this backend bridges is the platform's own, `WebKitGTK`.
 // Every other engine is a crate the application links and installs, and it
-// reaches the screen as an ordinary `GpuSurface` this backend draws like any
-// other — see `components::graphics::gpu_surface`.
+// reaches the screen as a `GpuContentView`/`ExternalFrameView` this backend
+// realizes like any other — see `components::graphics::gpu_surface`.
 #[cfg(all(target_os = "linux", feature = "webview-system"))]
 #[path = "webview_system.rs"]
 pub mod webview;
@@ -54,6 +56,8 @@ pub mod window;
 pub use app::GtkApp;
 #[cfg(target_os = "linux")]
 pub use app::init_main_thread_executors;
+#[cfg(target_os = "linux")]
+pub use menu_shortcuts::install_menu_shortcuts;
 #[cfg(target_os = "linux")]
 pub use renderer::GtkRenderer;
 

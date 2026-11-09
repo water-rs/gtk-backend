@@ -10,7 +10,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use nami::{Signal, SignalExt};
 use waterui::component::list::ListConfig;
-use waterui_core::views::Views;
+use waterui_core::views::{ViewSnapshot, Views};
 use waterui_core::{Environment, Native};
 
 use crate::component::GtkComponent;
@@ -43,9 +43,11 @@ impl GtkComponent for Native<ListConfig> {
         scrolled_window.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
 
         let model = Rc::new(KeyedModel::new());
-        let initial_ids = (0..contents.len().snapshot())
+        let initial_snapshot = contents.snapshot();
+        let initial_ids = initial_snapshot
+            .range()
             .map(|index| {
-                let id = contents
+                let id = initial_snapshot
                     .get_id(index)
                     .expect("List contents must provide an ID for every row");
                 i32::from(*id)
@@ -66,7 +68,8 @@ impl GtkComponent for Native<ListConfig> {
                 let id = list_item_id(list_item);
                 let index = usize::try_from(list_item.position())
                     .expect("GTK List position must fit in usize");
-                let current_id = contents
+                let snapshot = contents.snapshot();
+                let current_id = snapshot
                     .get_id(index)
                     .expect("GTK List position must exist in WaterUI contents");
                 assert_eq!(
@@ -74,7 +77,7 @@ impl GtkComponent for Native<ListConfig> {
                     id,
                     "GTK List model position must match WaterUI contents"
                 );
-                let Some(item) = contents.get_view(index) else {
+                let Some(item) = snapshot.get_view(index) else {
                     list_item.set_child(Option::<&Widget>::None);
                     return;
                 };
@@ -115,6 +118,7 @@ impl GtkComponent for Native<ListConfig> {
                         let current_index = usize::try_from(list_item.position())
                             .expect("GTK List position must fit in usize");
                         let current_id = contents
+                            .snapshot()
                             .get_id(current_index)
                             .expect("GTK deleted List row must still exist");
                         assert_eq!(
@@ -181,10 +185,11 @@ impl GtkComponent for Native<ListConfig> {
         let contents_guard = contents.watch(.., {
             let model = Rc::clone(&model);
             move |context, _change| {
-                let ids = context
-                    .value()
-                    .iter()
-                    .map(|id| i32::from(**id))
+                let snapshot = context.value();
+                let ids = snapshot
+                    .range()
+                    .filter_map(|index| snapshot.get_id(index))
+                    .map(|id| i32::from(*id))
                     .collect::<Vec<_>>();
                 let model = Rc::clone(&model);
                 glib::idle_add_local_once(move || {

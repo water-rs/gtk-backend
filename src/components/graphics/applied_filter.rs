@@ -1,4 +1,5 @@
-//! `AppliedFilter` host for GTK (Linux-only).
+//! `FilteredView` host for GTK (Linux-only): the retired `AppliedFilter`
+//! leaf ported to `filtrate`'s `ErasedEffect` contract.
 //!
 //! GTK never exposes a rendered widget's GPU texture handle through public
 //! API, so the child is captured through the snapshot pipeline
@@ -9,9 +10,10 @@
 //! `gdk_surface_create_gl_context` — a context in GTK's render-context share
 //! group — and handed to the compositor as a `GdkGLTexture`.
 //!
-//! Context currency follows the same discipline as `GpuSurface`: every wgpu
-//! call happens while the owning `GdkGLContext` is current, including each
-//! poll of the async device request and filter setup futures.
+//! Context currency follows the same discipline as the `GpuContentView`
+//! surface path: every wgpu call happens while the owning `GdkGLContext` is
+//! current, including each poll of the async device request and effect setup
+//! futures.
 
 use std::cell::RefCell;
 use std::future::Future;
@@ -28,14 +30,19 @@ use gtk4::graphene;
 use gtk4::gsk;
 use gtk4::prelude::*;
 use gtk4::{Orientation, Widget};
-use waterui_graphics::gpu_surface::WgslModuleCache;
-use waterui_graphics::{AppliedFilter, EffectContext, EffectFrameClock, EffectInput, EffectOutput};
+use waterui_core::{Environment, Native};
+use waterui_graphics::filter_view::{AnyEffect, ErasedEffect, FilteredView, ParamGuards};
+use waterui_graphics::filtrate::{
+    EffectContext, EffectFrameClock, EffectInput, EffectOutput, ShapeTextures,
+};
 
 use super::gl_util::{GlProcResolver, make_gl_resolver, texture_format_desc};
+use crate::component::GtkComponent;
+use crate::renderer::GtkRenderer;
 
 #[cfg(not(target_os = "linux"))]
 compile_error!(
-    "GTK AppliedFilter implementation is Linux-only. The waterui-gtk crate should not be built on non-Linux targets."
+    "GTK FilteredView implementation is Linux-only. The waterui-gtk crate should not be built on non-Linux targets."
 );
 
 /// The filter pipeline needs compute shaders, which `wgpu-hal`'s GLES backend
@@ -163,8 +170,7 @@ fn create_gl_render_target(gl: &glow::Context, size: PixelSize) -> Result<GlRend
 
 pin_project_lite::pin_project! {
     /// Makes the host's `GdkGLContext` current before every poll of the
-    /// wrapped future, the same discipline `WithAreaContextCurrent` applies
-    /// to `GpuSurface`: wgpu's external-GL adapter requires the owning context
+    /// wrapped future: wgpu's external-GL adapter requires the owning context
     /// current whenever a wgpu entry point runs, and an async task resuming on
     /// the main loop finds no context current at all.
     struct WithGlContextCurrent<F> {
@@ -206,7 +212,7 @@ pub enum SetupPhase {
     #[default]
     Idle,
     RequestingDevice,
-    RequestingFilter,
+    RequestingEffect,
     Ready,
 }
 
@@ -327,11 +333,15 @@ mod imp {
         }
     }
 
-    #[derive(Debug)]
     pub struct FilterState {
         pub child: Option<gtk4::Widget>,
         pub paintable: Option<gtk4::WidgetPaintable>,
-        pub filter: Option<AppliedFilter>,
+        /// The erased effect — a `filtrate::Executor` for a portable
+        /// filter, or the GPU effect itself — built on this thread.
+        pub effect: Option<Box<dyn ErasedEffect>>,
+        /// The subscriptions feeding the effect's reactive parameters;
+        /// dropping them freezes the parameters at their last value.
+        pub guards: Option<ParamGuards>,
         /// The presentation context, created from the widget's surface on the
         /// first snapshot. In GTK's render-context share group, so the GL
         /// textures we hand to `GdkGLTextureBuilder` composite directly.
@@ -344,10 +354,9 @@ mod imp {
         pub wgpu_adapter: Option<wgpu::Adapter>,
         pub wgpu_device: Option<wgpu::Device>,
         pub wgpu_queue: Option<wgpu::Queue>,
-        pub shader_cache: Arc<WgslModuleCache>,
-        /// Where the async bring-up stands. The filter holds wgpu objects
+        /// Where the async bring-up stands. The effect holds wgpu objects
         /// across `setup`, so a new context means a new setup — the same
-        /// re-setup `GpuSurface` runs.
+        /// re-setup the GPU surface path runs.
         pub setup_phase: SetupPhase,
         /// Set when the child's contents or the pixel size changed, so the
         /// next snapshot re-captures and re-filters.
@@ -375,13 +384,39 @@ mod imp {
         pub gl_resolver: Option<Rc<GlProcResolver>>,
     }
 
+    // `ErasedEffect` and `ParamGuards` are not `Debug`; the counters and
+    // presence flags carry everything a Debug dump is for.
+    impl std::fmt::Debug for FilterState {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("FilterState")
+                .field("child", &self.child)
+                .field("paintable", &self.paintable)
+                .field("effect", &self.effect.is_some())
+                .field("guards", &self.guards.is_some())
+                .field("gl_context", &self.gl_context)
+                .field("gsk_renderer", &self.gsk_renderer)
+                .field("glow", &self.glow)
+                .field("wgpu_device", &self.wgpu_device)
+                .field("wgpu_queue", &self.wgpu_queue)
+                .field("setup_phase", &self.setup_phase)
+                .field("capture_dirty", &self.capture_dirty)
+                .field("capture_size", &self.capture_size)
+                .field("input_texture", &self.input_texture)
+                .field("presented", &self.presented)
+                .field("generation", &self.generation)
+                .field("presented_frames", &self.presented_frames)
+                .finish_non_exhaustive()
+        }
+    }
+
     impl Default for FilteredHost {
         fn default() -> Self {
             Self {
                 state: Rc::new(RefCell::new(FilterState {
                     child: None,
                     paintable: None,
-                    filter: None,
+                    effect: None,
+                    guards: None,
                     gl_context: None,
                     gsk_renderer: None,
                     glow: None,
@@ -389,7 +424,6 @@ mod imp {
                     wgpu_adapter: None,
                     wgpu_device: None,
                     wgpu_queue: None,
-                    shader_cache: Arc::new(WgslModuleCache::new()),
                     setup_phase: SetupPhase::Idle,
                     capture_dirty: true,
                     capture_size: None,
@@ -422,8 +456,9 @@ impl FilteredHost {
     }
 }
 
-/// Builds the filtered-container widget hosting `content`.
-pub fn render_applied_filter(mut filter: AppliedFilter, content: Widget) -> Widget {
+/// Builds the filtered-container widget hosting `content` under the erased
+/// `effect`, keeping `guards` alive as long as the realization.
+pub fn render_filtered_view(effect: AnyEffect, guards: ParamGuards, content: Widget) -> Widget {
     let host = FilteredHost::new();
     tracing::debug!(
         "[gtk-filter] create filter host host_id={}",
@@ -434,7 +469,11 @@ pub fn render_applied_filter(mut filter: AppliedFilter, content: Widget) -> Widg
     // content through untouched — so every layout channel reads through to
     // the content it captures.
     crate::layout::proposal::transparent_to_content(host.upcast_ref(), &content);
-    let redraw_handle = filter.redraw_handle();
+    // A filter lowers into `filtrate`'s `Executor` here; a GPU-only effect
+    // arrives as itself. The boxed effect is `!Send` and stays on this
+    // thread — the same thread the GL context it renders against is
+    // current on.
+    let mut effect = effect.build();
 
     // `GtkWidgetPaintable` reports damage inside the child subtree
     // (`invalidate-contents`); that is the recapture trigger — an unrelated
@@ -449,14 +488,7 @@ pub fn render_applied_filter(mut filter: AppliedFilter, content: Widget) -> Widg
         }
     });
 
-    {
-        let mut state = host.imp().state.borrow_mut();
-        state.child = Some(content);
-        state.filter = Some(filter);
-        state.paintable = Some(paintable);
-    }
-
-    // The filter's redraw handle (animated parameters, external wakers)
+    // The effect's redraw callback (animated parameters, external wakers)
     // schedules a GTK frame; the `WeakRef` crosses threads inside a
     // `ThreadGuard` and is only dereferenced back on the main context.
     let host_guard = Arc::new(ThreadGuard::new(host.downgrade()));
@@ -469,7 +501,15 @@ pub fn render_applied_filter(mut filter: AppliedFilter, content: Widget) -> Widg
             }
         });
     });
-    redraw_handle.set_waker(Some(waker));
+    effect.set_redraw_callback(waker);
+
+    {
+        let mut state = host.imp().state.borrow_mut();
+        state.child = Some(content);
+        state.effect = Some(effect);
+        state.guards = Some(guards);
+        state.paintable = Some(paintable);
+    }
 
     host.upcast()
 }
@@ -511,8 +551,8 @@ impl imp::FilteredHost {
 
         let ready = matches!(self.state.borrow().setup_phase, SetupPhase::Ready);
         if !ready {
-            // Device request or filter setup still in flight; they queue a
-            // redraw when they land, the same way `GpuSurface` does.
+            // Device request or effect setup still in flight; they queue a
+            // redraw when they land.
             return;
         }
 
@@ -544,16 +584,16 @@ impl imp::FilteredHost {
     /// renderer bound to it.
     fn init_gl_context(&self, surface: &gdk4::Surface) -> gdk4::GLContext {
         let context = surface.create_gl_context().unwrap_or_else(|error| {
-            panic!("AppliedFilter: gdk_surface_create_gl_context failed: {error}")
+            panic!("FilteredView: gdk_surface_create_gl_context failed: {error}")
         });
         context.set_required_version(REQUIRED_GL_MAJOR, REQUIRED_GL_MINOR);
         context.realize().unwrap_or_else(|error| {
             panic!(
-                "AppliedFilter: a GL {REQUIRED_GL_MAJOR}.{REQUIRED_GL_MINOR} context is required for the filter pipeline and this display cannot provide one: {error}"
+                "FilteredView: a GL {REQUIRED_GL_MAJOR}.{REQUIRED_GL_MINOR} context is required for the filter pipeline and this display cannot provide one: {error}"
             )
         });
         let renderer = gsk::Renderer::for_surface(surface).unwrap_or_else(|| {
-            panic!("AppliedFilter: gsk_renderer_new_for_surface returned no renderer")
+            panic!("FilteredView: gsk_renderer_new_for_surface returned no renderer")
         });
         let mut state = self.state.borrow_mut();
         state.gsk_renderer = Some(renderer);
@@ -588,7 +628,7 @@ impl imp::FilteredHost {
                 wgpu::GlBackendOptions::default(),
             )
         }
-        .unwrap_or_else(|| panic!("AppliedFilter: wgpu-hal failed to create external adapter"));
+        .unwrap_or_else(|| panic!("FilteredView: wgpu-hal failed to create external adapter"));
 
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = wgpu::Backends::GL;
@@ -601,7 +641,7 @@ impl imp::FilteredHost {
         // starve compute filters of workgroup and storage resources the
         // context really has.
         let device_descriptor = wgpu::DeviceDescriptor {
-            label: Some("WaterUI GTK AppliedFilter (GLES) Device"),
+            label: Some("WaterUI GTK FilteredView (GLES) Device"),
             required_features: wgpu::Features::empty(),
             required_limits: adapter.limits(),
             memory_hints: wgpu::MemoryHints::Performance,
@@ -644,7 +684,7 @@ impl imp::FilteredHost {
                             state.setup_phase = SetupPhase::Idle;
                         }
                         Err(error) => {
-                            panic!("AppliedFilter: failed to request wgpu device: {error}")
+                            panic!("FilteredView: failed to request wgpu device: {error}")
                         }
                     }
                 }
@@ -653,30 +693,24 @@ impl imp::FilteredHost {
         });
     }
 
-    /// Runs `AppliedFilter::setup` once the device exists, with the context
+    /// Runs the effect's `setup` once the device exists, with the context
     /// made current on every poll.
     fn init_filter(&self, gl_context: &gdk4::GLContext) {
-        let (device, queue, mut filter, shader_cache, gl_resolver) = {
+        let (device, queue, mut effect, gl_resolver) = {
             let mut state = self.state.borrow_mut();
             if state.setup_phase != SetupPhase::Idle {
                 return;
             }
-            let (Some(device), Some(queue), Some(gl_resolver), Some(filter)) = (
+            let (Some(device), Some(queue), Some(gl_resolver), Some(effect)) = (
                 state.wgpu_device.clone(),
                 state.wgpu_queue.clone(),
                 state.gl_resolver.clone(),
-                state.filter.take(),
+                state.effect.take(),
             ) else {
                 return;
             };
-            state.setup_phase = SetupPhase::RequestingFilter;
-            (
-                device,
-                queue,
-                filter,
-                Arc::clone(&state.shader_cache),
-                gl_resolver,
-            )
+            state.setup_phase = SetupPhase::RequestingEffect;
+            (device, queue, effect, gl_resolver)
         };
 
         let generation = self.state.borrow().generation;
@@ -689,22 +723,21 @@ impl imp::FilteredHost {
                 let context = EffectContext {
                     device: &device,
                     queue: &queue,
-                    shader_cache: shader_cache.as_ref(),
                     input_format: wgpu::TextureFormat::Rgba8Unorm,
                     output_format: wgpu::TextureFormat::Rgba8Unorm,
                 };
-                filter
+                effect
                     .setup(&context)
                     .await
-                    .unwrap_or_else(|error| panic!("AppliedFilter: filter setup failed: {error}"));
+                    .unwrap_or_else(|error| panic!("FilteredView: effect setup failed: {error}"));
                 {
                     let mut state = imp_state.borrow_mut();
-                    state.filter = Some(filter);
+                    state.effect = Some(effect);
                     if state.generation == generation {
                         state.setup_phase = SetupPhase::Ready;
                         state.capture_dirty = true;
                     } else {
-                        // The filter was set up against a dead context; leave
+                        // The effect was set up against a dead context; leave
                         // the phase `unrealize` already reset so the next
                         // snapshot runs the whole bring-up again.
                         state.setup_phase = SetupPhase::Idle;
@@ -833,7 +866,7 @@ impl imp::FilteredHost {
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(
-                    u32::try_from(stride).expect("AppliedFilter: capture stride exceeds u32"),
+                    u32::try_from(stride).expect("FilteredView: capture stride exceeds u32"),
                 ),
                 rows_per_image: Some(gpu.size.height),
             },
@@ -862,9 +895,9 @@ impl imp::FilteredHost {
         let (output_width, output_height) = {
             let state = self.state.borrow();
             state
-                .filter
+                .effect
                 .as_ref()
-                .expect("AppliedFilter used before setup")
+                .expect("FilteredView used before setup")
                 .output_size(gpu.size.width, gpu.size.height)
         };
         let output_size = PixelSize {
@@ -872,7 +905,7 @@ impl imp::FilteredHost {
             height: output_height.max(1),
         };
         let target = create_gl_render_target(&gpu.gl, output_size).unwrap_or_else(|error| {
-            panic!("AppliedFilter: failed to allocate the output GL texture: {error}")
+            panic!("FilteredView: failed to allocate the output GL texture: {error}")
         });
 
         let hal_texture = wgpu::hal::gles::Texture {
@@ -898,7 +931,7 @@ impl imp::FilteredHost {
             gpu.device.create_texture_from_hal::<wgpu::hal::api::Gles>(
                 hal_texture,
                 &wgpu::TextureDescriptor {
-                    label: Some("WaterUI GTK AppliedFilter Output"),
+                    label: Some("WaterUI GTK FilteredView Output"),
                     size: wgpu::Extent3d {
                         width: output_size.width,
                         height: output_size.height,
@@ -911,6 +944,7 @@ impl imp::FilteredHost {
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                     view_formats: &[],
                 },
+                wgpu::TextureUses::UNINITIALIZED,
             )
         };
         let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -918,15 +952,15 @@ impl imp::FilteredHost {
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("WaterUI GTK AppliedFilter"),
+                label: Some("WaterUI GTK FilteredView"),
             });
         let needs_redraw = {
             let mut state = self.state.borrow_mut();
             let timing = state.frame_clock.tick();
-            let filter = state
-                .filter
+            let effect = state
+                .effect
                 .as_mut()
-                .expect("AppliedFilter used before setup");
+                .expect("FilteredView used before setup");
             let input = EffectInput {
                 device: &gpu.device,
                 queue: &gpu.queue,
@@ -936,6 +970,7 @@ impl imp::FilteredHost {
                 width: gpu.size.width,
                 height: gpu.size.height,
                 timing,
+                shape: ShapeTextures::default(),
             };
             let output = EffectOutput {
                 device: &gpu.device,
@@ -946,9 +981,10 @@ impl imp::FilteredHost {
                 width: output_size.width,
                 height: output_size.height,
             };
-            filter
+            effect
                 .encode_render(&input, &output, &mut encoder)
-                .unwrap_or_else(|error| panic!("AppliedFilter: filter render failed: {error}"))
+                .unwrap_or_else(|error| panic!("FilteredView: effect render failed: {error}"))
+                || effect.redraw_hint()
         };
         gpu.queue.submit([encoder.finish()]);
 
@@ -958,7 +994,7 @@ impl imp::FilteredHost {
         // SAFETY: the host's GL context is current; the fence is created after
         // the submit above so it signals after all of wgpu's GL commands.
         let fence = unsafe { gpu.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0) }
-            .unwrap_or_else(|error| panic!("AppliedFilter: glFenceSync failed: {error}"));
+            .unwrap_or_else(|error| panic!("FilteredView: glFenceSync failed: {error}"));
 
         // The wgpu texture drops its framebuffer reference here; GL keeps the
         // object alive until the context stops referencing it, and the
@@ -1027,6 +1063,14 @@ fn build_gl_texture(
             None,
             std::ptr::null_mut(),
         ))
+    }
+}
+
+impl GtkComponent for Native<FilteredView> {
+    fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
+        let view = self.into_inner();
+        let content = renderer.render_any(view.content, env);
+        render_filtered_view(view.effect, view.guards, content)
     }
 }
 
@@ -1101,13 +1145,14 @@ mod tests {
 
         let picture = gtk4::Picture::for_paintable(&solid_texture([255, 0, 0, 255], 64));
         picture.set_content_fit(gtk4::ContentFit::Fill);
-        let host = render_applied_filter(
-            AppliedFilter::new(filtrate::FilterAdapter::new(filtrate::filters::Invert)),
+        let host = render_filtered_view(
+            AnyEffect::filter(filtrate::filters::Invert),
+            ParamGuards::default(),
             picture.clone().upcast(),
         );
         let host = host
             .downcast::<FilteredHost>()
-            .expect("render_applied_filter returns the host widget");
+            .expect("render_filtered_view returns the host widget");
 
         let window = gtk4::Window::new();
         window.set_default_size(64, 64);

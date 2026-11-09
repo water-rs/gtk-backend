@@ -8,7 +8,7 @@ use gtk4::prelude::*;
 use nami::{Signal, SignalExt};
 use waterui::component::badge::BadgeConfig;
 use waterui_core::{Environment, Native};
-use waterui_graphics::color::ResolvedColor;
+use waterui_graphics::color::WorkingColor;
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
@@ -22,7 +22,7 @@ const DOT_SIZE: i32 = 6;
 /// Height and minimum width of the labeled pill indicator.
 const PILL_SIZE: i32 = 16;
 
-fn badge_declarations(value: i32, color: ResolvedColor) -> String {
+fn badge_declarations(value: i32, color: WorkingColor) -> String {
     let background = resolved_color_to_css_rgba(color);
     if value == 0 {
         format!("border-radius: 999px; padding: 0; background-color: {background};")
@@ -33,7 +33,7 @@ fn badge_declarations(value: i32, color: ResolvedColor) -> String {
     }
 }
 
-fn apply_badge(label: &gtk4::Label, css: &ScopedCss, value: i32, color: ResolvedColor) {
+fn apply_badge(label: &gtk4::Label, css: &ScopedCss, value: i32, color: WorkingColor) {
     if value == 0 {
         label.set_text("");
         label.set_size_request(DOT_SIZE, DOT_SIZE);

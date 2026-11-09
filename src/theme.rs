@@ -16,27 +16,27 @@ use waterui::theme::{
     installed_color_signal,
 };
 use waterui_core::Environment;
-use waterui_graphics::color::{ResolvedColor, Srgb};
+use waterui_graphics::color::{Srgb, WorkingColor};
 use waterui_text::font::{
     Body, Caption, FontSlot, FontWeight, Footnote, Headline, ResolvedFont, Subheadline, Title,
 };
 
 struct Palette {
-    background: Binding<ResolvedColor>,
-    surface: Binding<ResolvedColor>,
-    surface_variant: Binding<ResolvedColor>,
-    border: Binding<ResolvedColor>,
-    foreground: Binding<ResolvedColor>,
-    muted_foreground: Binding<ResolvedColor>,
-    accent: Binding<ResolvedColor>,
-    accent_container: Binding<ResolvedColor>,
-    accent_foreground: Binding<ResolvedColor>,
-    tertiary: Binding<ResolvedColor>,
-    tertiary_container: Binding<ResolvedColor>,
-    selection_container: Binding<ResolvedColor>,
-    selection_foreground: Binding<ResolvedColor>,
-    error: Binding<ResolvedColor>,
-    error_foreground: Binding<ResolvedColor>,
+    background: Binding<WorkingColor>,
+    surface: Binding<WorkingColor>,
+    surface_variant: Binding<WorkingColor>,
+    border: Binding<WorkingColor>,
+    foreground: Binding<WorkingColor>,
+    muted_foreground: Binding<WorkingColor>,
+    accent: Binding<WorkingColor>,
+    accent_container: Binding<WorkingColor>,
+    accent_foreground: Binding<WorkingColor>,
+    tertiary: Binding<WorkingColor>,
+    tertiary_container: Binding<WorkingColor>,
+    selection_container: Binding<WorkingColor>,
+    selection_foreground: Binding<WorkingColor>,
+    error: Binding<WorkingColor>,
+    error_foreground: Binding<WorkingColor>,
 }
 
 /// Installs GTK's named system colors and keeps them synchronized with theme changes.
@@ -81,7 +81,7 @@ pub fn install(env: &mut Environment, widget: &Widget) {
     settings.connect_notify_local(Some("gtk-theme-name"), move |_, _| palette.update(&widget));
 }
 
-fn install_missing<T: 'static>(env: &mut Environment, value: &Binding<ResolvedColor>) {
+fn install_missing<T: 'static>(env: &mut Environment, value: &Binding<WorkingColor>) {
     if installed_color_signal::<T>(env).is_none() {
         install_color_signal::<T>(env, value.clone().computed());
     }
@@ -159,7 +159,7 @@ impl Palette {
     deprecated,
     reason = "GTK 4.10 deprecated GtkStyleContext with no replacement for named-color lookup"
 )]
-fn lookup(widget: &Widget, name: &str) -> ResolvedColor {
+fn lookup(widget: &Widget, name: &str) -> WorkingColor {
     let rgba = widget
         .style_context()
         .lookup_color(name)
@@ -167,15 +167,14 @@ fn lookup(widget: &Widget, name: &str) -> ResolvedColor {
     resolved(rgba)
 }
 
-fn resolved(rgba: RGBA) -> ResolvedColor {
-    let mut color = ResolvedColor::from_srgb(Srgb::new(rgba.red(), rgba.green(), rgba.blue()));
-    color.opacity = rgba.alpha();
-    color
+fn resolved(rgba: RGBA) -> WorkingColor {
+    Srgb::new(rgba.red(), rgba.green(), rgba.blue())
+        .resolve()
+        .with_alpha(rgba.alpha())
 }
 
-fn with_opacity(mut color: ResolvedColor, opacity: f32) -> ResolvedColor {
-    color.opacity *= opacity;
-    color
+fn with_opacity(color: WorkingColor, opacity: f32) -> WorkingColor {
+    color.with_alpha(color.components[3] * opacity)
 }
 
 fn system_scheme(settings: &Settings) -> ColorScheme {

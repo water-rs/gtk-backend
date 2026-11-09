@@ -1,10 +1,11 @@
-//! GTK `ResolvedGradient` component implementation.
+//! GTK `Gradient` component implementation.
 
 use gtk4::Widget;
 use gtk4::prelude::*;
 use waterui_core::{Environment, Native};
-use waterui_graphics::color::ResolvedColor;
-use waterui_graphics::{GradientType, ResolvedGradient, ResolvedGradientStop};
+use waterui_graphics::Gradient;
+use waterui_graphics::cherenkov::{ColorStop, Paint, SweepGradient};
+use waterui_graphics::color::{WorkingColor, working};
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
@@ -12,15 +13,22 @@ use crate::util::resolved_color_to_srgba_f64;
 
 const ANGULAR_SEGMENTS: usize = 720;
 
-impl GtkComponent for Native<ResolvedGradient> {
+impl GtkComponent for Native<Gradient> {
     fn render(self, _env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
-        let resolved = self.into_inner();
-        let mut stops = resolved.stops.clone();
-        stops.sort_by(|a, b| a.position.total_cmp(&b.position));
-        assert!(
-            !stops.is_empty(),
-            "resolved gradient must contain at least one stop"
-        );
+        let gradient = self.into_inner();
+        let mut stops = match gradient.paint() {
+            Paint::Linear(paint) => paint.stops.clone(),
+            Paint::Radial(paint) => paint.stops.clone(),
+            Paint::Sweep(paint) => paint.stops.clone(),
+            Paint::Mesh(_) => {
+                unreachable!("Native<Gradient> never carries a mesh paint")
+            }
+            Paint::Solid(_) | Paint::Image(_) | Paint::Shader(_) | Paint::Transformed(_) => {
+                unreachable!("a Gradient only carries linear, radial, or sweep paints")
+            }
+        };
+        stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+        assert!(!stops.is_empty(), "gradient must contain at least one stop");
 
         let area = gtk4::DrawingArea::new();
         area.set_hexpand(true);
@@ -35,56 +43,57 @@ impl GtkComponent for Native<ResolvedGradient> {
                 return;
             }
 
-            match resolved.gradient_type {
-                GradientType::Linear => {
-                    let gradient = gtk4::cairo::LinearGradient::new(
-                        f64::from(resolved.start_point[0]) * width,
-                        f64::from(resolved.start_point[1]) * height,
-                        f64::from(resolved.end_point[0]) * width,
-                        f64::from(resolved.end_point[1]) * height,
+            match gradient.paint() {
+                Paint::Linear(paint) => {
+                    let cairo = gtk4::cairo::LinearGradient::new(
+                        paint.start.x * width,
+                        paint.start.y * height,
+                        paint.end.x * width,
+                        paint.end.y * height,
                     );
                     for stop in &stops {
                         let (red, green, blue, alpha) = to_rgba(stop.color);
-                        gradient.add_color_stop_rgba(
-                            f64::from(stop.position),
-                            red,
-                            green,
-                            blue,
-                            alpha,
-                        );
+                        cairo.add_color_stop_rgba(f64::from(stop.offset), red, green, blue, alpha);
                     }
                     cr.rectangle(0.0, 0.0, width, height);
-                    cr.set_source(&gradient)
+                    cr.set_source(&cairo)
                         .expect("failed to bind linear gradient source");
                     cr.fill().expect("failed to draw linear gradient");
                 }
-                GradientType::Radial => {
-                    let cx = f64::from(resolved.start_point[0]) * width;
-                    let cy = f64::from(resolved.start_point[1]) * height;
+                Paint::Radial(paint) => {
                     let scale = width.min(height);
-                    let start_radius = f64::from(resolved.start_value) * scale;
-                    let end_radius = f64::from(resolved.end_value) * scale;
+                    let start_radius = paint.start_radius * scale;
+                    let end_radius = paint.end_radius * scale;
                     assert!(end_radius > 0.0, "radial gradient end radius must be > 0");
 
-                    let gradient =
-                        gtk4::cairo::RadialGradient::new(cx, cy, start_radius, cx, cy, end_radius);
+                    let cairo = gtk4::cairo::RadialGradient::new(
+                        paint.start_center.x * width,
+                        paint.start_center.y * height,
+                        start_radius,
+                        paint.end_center.x * width,
+                        paint.end_center.y * height,
+                        end_radius,
+                    );
                     for stop in &stops {
                         let normalized = (end_radius - start_radius)
-                            .mul_add(f64::from(stop.position), start_radius)
+                            .mul_add(f64::from(stop.offset), start_radius)
                             / end_radius;
                         let (red, green, blue, alpha) = to_rgba(stop.color);
-                        gradient.add_color_stop_rgba(normalized, red, green, blue, alpha);
+                        cairo.add_color_stop_rgba(normalized, red, green, blue, alpha);
                     }
                     cr.rectangle(0.0, 0.0, width, height);
-                    cr.set_source(&gradient)
+                    cr.set_source(&cairo)
                         .expect("failed to bind radial gradient source");
                     cr.fill().expect("failed to draw radial gradient");
                 }
-                GradientType::Angular => {
-                    draw_angular_gradient(cr, &resolved, stops.as_slice(), width, height);
+                Paint::Sweep(paint) => {
+                    draw_angular_gradient(cr, paint, stops.as_slice(), width, height);
                 }
-                GradientType::Mesh => {
-                    panic!("ResolvedGradient with mesh type is invalid")
+                Paint::Mesh(_) => {
+                    unreachable!("Native<Gradient> never carries a mesh paint")
+                }
+                Paint::Solid(_) | Paint::Image(_) | Paint::Shader(_) | Paint::Transformed(_) => {
+                    unreachable!("a Gradient only carries linear, radial, or sweep paints")
                 }
             }
         });
@@ -100,22 +109,22 @@ impl GtkComponent for Native<ResolvedGradient> {
 )]
 fn draw_angular_gradient(
     cr: &gtk4::cairo::Context,
-    resolved: &ResolvedGradient,
-    stops: &[ResolvedGradientStop],
+    gradient: &SweepGradient,
+    stops: &[ColorStop],
     width: f64,
     height: f64,
 ) {
-    let sweep = f64::from(resolved.end_value - resolved.start_value);
+    let sweep = gradient.end_angle - gradient.start_angle;
     assert!(sweep > 0.0, "angular gradient sweep must be positive");
     assert!(
         sweep <= core::f64::consts::TAU,
         "angular gradient sweep must be <= TAU"
     );
 
-    let cx = f64::from(resolved.start_point[0]) * width;
-    let cy = f64::from(resolved.start_point[1]) * height;
+    let cx = gradient.center.x * width;
+    let cy = gradient.center.y * height;
     let radius = width.hypot(height);
-    let start = f64::from(resolved.start_value);
+    let start = gradient.start_angle;
     let sweep_fraction = sweep / core::f64::consts::TAU;
 
     for segment in 0..ANGULAR_SEGMENTS {
@@ -146,45 +155,35 @@ fn draw_angular_gradient(
     }
 }
 
-fn sample_stop_color(stops: &[ResolvedGradientStop], t: f32) -> ResolvedColor {
+fn sample_stop_color(stops: &[ColorStop], t: f32) -> WorkingColor {
     assert!(
         (0.0..=1.0).contains(&t),
         "gradient sampling position must be within [0, 1]"
     );
-    if t <= stops[0].position {
+    if t <= stops[0].offset {
         return stops[0].color;
     }
 
     for window in stops.windows(2) {
         let left = window[0];
         let right = window[1];
-        if t <= right.position {
-            let span = right.position - left.position;
+        if t <= right.offset {
+            let span = right.offset - left.offset;
             assert!(
                 span > 0.0,
                 "gradient stop positions must be strictly increasing"
             );
-            let local_t = (t - left.position) / span;
-            return lerp_color(left.color, right.color, local_t);
+            let local_t = (t - left.offset) / span;
+            return working::lerp(left.color, right.color, local_t);
         }
     }
 
     stops
         .last()
-        .expect("resolved gradient must contain at least one stop")
+        .expect("gradient must contain at least one stop")
         .color
 }
 
-fn lerp_color(a: ResolvedColor, b: ResolvedColor, t: f32) -> ResolvedColor {
-    ResolvedColor {
-        red: (b.red - a.red).mul_add(t, a.red),
-        green: (b.green - a.green).mul_add(t, a.green),
-        blue: (b.blue - a.blue).mul_add(t, a.blue),
-        headroom: (b.headroom - a.headroom).mul_add(t, a.headroom),
-        opacity: (b.opacity - a.opacity).mul_add(t, a.opacity),
-    }
-}
-
-fn to_rgba(color: ResolvedColor) -> (f64, f64, f64, f64) {
+fn to_rgba(color: WorkingColor) -> (f64, f64, f64, f64) {
     resolved_color_to_srgba_f64(color)
 }

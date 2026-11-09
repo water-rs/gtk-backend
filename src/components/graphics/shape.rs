@@ -8,7 +8,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use waterui::shape::{PathCommand, ResolvedShape, ShapeKind};
 use waterui_core::{Environment, Native};
-use waterui_graphics::color::ResolvedColor;
+use waterui_graphics::color::WorkingColor;
 
 use super::gsk_path;
 use crate::component::GtkComponent;
@@ -27,7 +27,7 @@ impl GtkComponent for Native<ResolvedShape> {
 
         // The resolved fill stays reactive to theme changes, so the draw function
         // reads the latest color from a shared cell that the watcher repaints on.
-        let fill = Rc::new(Cell::new(ResolvedColor::default()));
+        let fill = Rc::new(Cell::new(WorkingColor::TRANSPARENT));
         let (initial_fill, fill_guard) = subscribe_then_get(&resolved.fill, {
             let area = area.clone();
             let fill = Rc::clone(&fill);
@@ -164,6 +164,6 @@ fn append_corner_arc(
     cr.restore().expect("failed to restore the cairo state");
 }
 
-fn to_rgba(color: ResolvedColor) -> (f64, f64, f64, f64) {
+fn to_rgba(color: WorkingColor) -> (f64, f64, f64, f64) {
     resolved_color_to_srgba_f64(color)
 }

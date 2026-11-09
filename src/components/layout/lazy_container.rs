@@ -8,7 +8,7 @@ use gtk4::prelude::*;
 use gtk4::{Orientation, Widget};
 use nami::Signal;
 use waterui_core::layout::{Layout, StretchAxis};
-use waterui_core::views::{SharedAnyViews, Views};
+use waterui_core::views::{SharedAnyViews, ViewSnapshot, Views};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_layout::container::LazyContainer;
 use waterui_layout::stack::{LazyStackAxis, lazy_stack_axis};
@@ -31,9 +31,11 @@ impl GtkComponent for Native<LazyContainer> {
         let env = env.clone();
 
         let model = Rc::new(KeyedModel::new());
-        let initial_ids = (0..contents.len().snapshot())
+        let initial_snapshot = contents.snapshot();
+        let initial_ids = initial_snapshot
+            .range()
             .map(|index| {
-                let id = contents
+                let id = initial_snapshot
                     .get_id(index)
                     .expect("LazyContainer contents must provide an ID for every child");
                 i32::from(*id)
@@ -130,10 +132,11 @@ impl GtkComponent for Native<LazyContainer> {
         let contents_guard = contents.watch(.., {
             let model = Rc::clone(&model);
             move |context, _change| {
-                let ids = context
-                    .value()
-                    .iter()
-                    .map(|id| i32::from(**id))
+                let snapshot = context.value();
+                let ids = snapshot
+                    .range()
+                    .filter_map(|index| snapshot.get_id(index))
+                    .map(|id| i32::from(*id))
                     .collect::<Vec<_>>();
                 let model = Rc::clone(&model);
                 glib::idle_add_local_once(move || {
@@ -169,7 +172,8 @@ fn wire_factory(
         let id = list_item_id(list_item);
         let index = usize::try_from(list_item.position())
             .expect("GTK LazyContainer position must fit in usize");
-        let current_id = contents
+        let snapshot = contents.snapshot();
+        let current_id = snapshot
             .get_id(index)
             .expect("GTK LazyContainer position must exist in WaterUI contents");
         assert_eq!(
@@ -179,7 +183,7 @@ fn wire_factory(
         );
 
         // Reconstruct view lazily
-        if let Some(view) = contents.get_view(index) {
+        if let Some(view) = snapshot.get_view(index) {
             // Render with a fresh renderer to avoid holding a raw pointer.
             let mut renderer = GtkRenderer::new();
             let widget = renderer.render_any(view, &env);
@@ -243,8 +247,10 @@ fn materialize_children(
     contents: &SharedAnyViews<AnyView>,
     env: &Environment,
 ) -> Vec<(Widget, StretchAxis)> {
-    (0..contents.len().snapshot())
-        .filter_map(|index| contents.get_view(index))
+    let snapshot = contents.snapshot();
+    snapshot
+        .range()
+        .filter_map(|index| snapshot.get_view(index))
         .map(|view| {
             let mut renderer = GtkRenderer::new();
             renderer.render_any_with_axis(view, env)

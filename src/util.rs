@@ -9,7 +9,7 @@ use nami::{
     Signal,
     watcher::{BoxWatcherGuard, Context},
 };
-use waterui_graphics::color::ResolvedColor;
+use waterui_graphics::color::{WorkingColor, working};
 
 /// Installs a signal subscription before taking its initial snapshot.
 pub fn subscribe_then_get<S>(
@@ -140,13 +140,13 @@ pub(crate) fn channel_to_u8(channel: f32) -> u8 {
 
 /// Converts a resolved color to clamped sRGBA byte channels.
 #[must_use]
-pub fn resolved_color_to_rgba8(color: ResolvedColor) -> (u8, u8, u8, f32) {
-    let srgb = color.to_srgb_with_headroom();
+pub fn resolved_color_to_rgba8(color: WorkingColor) -> (u8, u8, u8, f32) {
+    let srgb = working::to_srgb(color);
     (
         channel_to_u8(srgb.red),
         channel_to_u8(srgb.green),
         channel_to_u8(srgb.blue),
-        color.opacity.clamp(0.0, 1.0),
+        color.components[3].clamp(0.0, 1.0),
     )
 }
 
@@ -156,8 +156,8 @@ pub fn resolved_color_to_rgba8(color: ResolvedColor) -> (u8, u8, u8, f32) {
 ///
 /// Panics if any channel of the resolved color is not finite.
 #[must_use]
-pub fn resolved_color_to_srgba_f64(color: ResolvedColor) -> (f64, f64, f64, f64) {
-    let srgb = color.to_srgb_with_headroom();
+pub fn resolved_color_to_srgba_f64(color: WorkingColor) -> (f64, f64, f64, f64) {
+    let srgb = working::to_srgb(color);
     assert!(
         srgb.red.is_finite(),
         "resolved color red channel must be finite"
@@ -171,27 +171,27 @@ pub fn resolved_color_to_srgba_f64(color: ResolvedColor) -> (f64, f64, f64, f64)
         "resolved color blue channel must be finite"
     );
     assert!(
-        color.opacity.is_finite(),
+        color.components[3].is_finite(),
         "resolved color opacity channel must be finite"
     );
     (
         f64::from(srgb.red.clamp(0.0, 1.0)),
         f64::from(srgb.green.clamp(0.0, 1.0)),
         f64::from(srgb.blue.clamp(0.0, 1.0)),
-        f64::from(color.opacity.clamp(0.0, 1.0)),
+        f64::from(color.components[3].clamp(0.0, 1.0)),
     )
 }
 
 /// Converts a resolved color to `#RRGGBB` format.
 #[must_use]
-pub fn resolved_color_to_hex(color: ResolvedColor) -> String {
+pub fn resolved_color_to_hex(color: WorkingColor) -> String {
     let (red, green, blue, _) = resolved_color_to_rgba8(color);
     format!("#{red:02X}{green:02X}{blue:02X}")
 }
 
 /// Converts a resolved color to CSS `rgba(r, g, b, a)` format.
 #[must_use]
-pub fn resolved_color_to_css_rgba(color: ResolvedColor) -> String {
+pub fn resolved_color_to_css_rgba(color: WorkingColor) -> String {
     let (red, green, blue, alpha) = resolved_color_to_rgba8(color);
     format!("rgba({red}, {green}, {blue}, {alpha})")
 }
@@ -222,15 +222,15 @@ mod tests {
     #[test]
     fn rgba8_rounds_srgb_roundtrip_to_full_byte() {
         assert_eq!(
-            resolved_color_to_rgba8(ResolvedColor::from_srgb(Srgb::new_u8(255, 255, 255))),
+            resolved_color_to_rgba8(Srgb::new_u8(255, 255, 255).resolve()),
             (255, 255, 255, 1.0)
         );
         assert_eq!(
-            resolved_color_to_rgba8(ResolvedColor::from_srgb(Srgb::new_u8(255, 0, 0))),
+            resolved_color_to_rgba8(Srgb::new_u8(255, 0, 0).resolve()),
             (255, 0, 0, 1.0)
         );
         assert_eq!(
-            resolved_color_to_rgba8(ResolvedColor::from_srgb(Srgb::new_u8(0, 128, 64))),
+            resolved_color_to_rgba8(Srgb::new_u8(0, 128, 64).resolve()),
             (0, 128, 64, 1.0)
         );
     }

@@ -16,7 +16,7 @@ use gtk4::subclass::prelude::*;
 use gtk4::{Widget, gdk, glib, graphene};
 use waterui_core::{Environment, Native, Signal};
 use waterui_graphics::Picture;
-use waterui_graphics::scene2d_cpu::rasterize_recording;
+use waterui_graphics::raster::rasterize_picture;
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
@@ -141,7 +141,8 @@ mod imp {
                     let transform = picture.transform_to(pixel_size.0 as f32, pixel_size.1 as f32);
                     let recording = picture.recording().snapshot();
                     let bitmap =
-                        rasterize_recording(&recording, pixel_size.0, pixel_size.1, transform);
+                        rasterize_picture(&recording, pixel_size.0, pixel_size.1, transform)
+                            .expect("a picture recording must rasterize on a fresh engine");
                     let stride =
                         usize::try_from(pixel_size.0 * 4).expect("a bitmap row fits usize");
                     let bytes = glib::Bytes::from_owned(bitmap.into_data());

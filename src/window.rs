@@ -11,7 +11,7 @@ use nami::{Binding, Computed, Signal};
 use num_traits::ToPrimitive as _;
 use waterui::window::{WindowIcon, WindowState, WindowStyle};
 use waterui_core::Environment;
-use waterui_graphics::color::ResolvedColor;
+use waterui_graphics::color::WorkingColor;
 
 use crate::util::{ScopedCss, resolved_color_to_css_rgba, store_watcher_guard, subscribe_then_get};
 
@@ -840,7 +840,7 @@ fn restore_application_icon(window: &ApplicationWindow) {
 /// following both a switch between the two and a change of the colour. It is
 /// painted as the window's CSS background, so a translucent colour reaches
 /// the compositor.
-pub fn apply_window_background(window: &ApplicationWindow, resolved: &Computed<ResolvedColor>) {
+pub fn apply_window_background(window: &ApplicationWindow, resolved: &Computed<WorkingColor>) {
     let css = ScopedCss::attach(
         window,
         "waterui-window-background",
@@ -858,7 +858,7 @@ pub fn apply_window_background(window: &ApplicationWindow, resolved: &Computed<R
     store_watcher_guard(window, guard);
 }
 
-fn apply_background_css(css: &ScopedCss, resolved: ResolvedColor) {
+fn apply_background_css(css: &ScopedCss, resolved: WorkingColor) {
     css.set_declarations(&format!(
         "background-color: {};",
         resolved_color_to_css_rgba(resolved)
@@ -1072,7 +1072,7 @@ mod placement_x11_tests {
             return;
         };
         let monitors = settled_monitors(&display);
-        assert!(!monitors.is_empty());
+        assert_ne!(monitors.len(), 0);
         let test_dpy = test_xdisplay();
         for monitor in &monitors {
             let (left, top, width, height) = physical_rect(monitor);
@@ -1201,7 +1201,7 @@ mod placement_x11_tests {
             return;
         };
         let monitors = settled_monitors(&display);
-        assert!(!monitors.is_empty());
+        assert_ne!(monitors.len(), 0);
         // Put the pointer on the last monitor so `Pointer` resolves there.
         let test_dpy = test_xdisplay();
         {

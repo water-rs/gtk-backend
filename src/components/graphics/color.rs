@@ -1,9 +1,9 @@
-//! GTK `ResolvedColor` component implementation.
+//! GTK `Color` component implementation.
 
 use gtk4::Widget;
 use gtk4::prelude::*;
 use waterui_core::{Environment, Native};
-use waterui_graphics::color::{Color, ResolvedColor};
+use waterui_graphics::color::{Color, WorkingColor};
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
@@ -22,7 +22,7 @@ fn color_widget() -> (gtk4::Box, ScopedCss) {
     (widget, css)
 }
 
-fn apply_color(css: &ScopedCss, resolved: ResolvedColor) {
+fn apply_color(css: &ScopedCss, resolved: WorkingColor) {
     css.set_declarations(&format!(
         "background-color: {};",
         resolved_color_to_css_rgba(resolved)
@@ -42,15 +42,6 @@ impl GtkComponent for Native<Color> {
         });
         apply_color(&css, initial);
         store_watcher_guard(&widget, Box::new(guard));
-        widget.upcast()
-    }
-}
-
-impl GtkComponent for Native<ResolvedColor> {
-    fn render(self, _env: &Environment, _renderer: &mut GtkRenderer) -> Widget {
-        let resolved = self.into_inner();
-        let (widget, css) = color_widget();
-        apply_color(&css, resolved);
         widget.upcast()
     }
 }

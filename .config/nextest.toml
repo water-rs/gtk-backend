@@ -7,7 +7,7 @@
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = 'test(/renderer::focus_tests::/) | test(/renderer::gesture_button_tests::/) | test(/applied_filter/) | test(/placement_x11_tests::/) | test(/window_state_tests::/)'
+filter = 'test(/renderer::focus_tests::/) | test(/renderer::gesture_button_tests::/) | test(/applied_filter/) | test(/placement_x11_tests::/) | test(/window_state_tests::/) | test(/menu_shortcuts::windowed_tests::/)'
 test-group = 'windowed'
 
 # The `WebKitGTK` system tests moved to `tests/webview_system.rs`, a
