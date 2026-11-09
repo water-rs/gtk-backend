@@ -127,9 +127,6 @@ wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a7
 wgpu-types = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
 naga = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
 naga-types = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
-# Same rev waterui-graphics' build graph selects; a registry shaderloom would
-# compile a second `naga` beside the fork.
-shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "b0b6870c8b560d902c1de9a4d039c3a921b18b92" }
 # The pinned waterui rev names the same-wave waterkit rev; a registry copy
 # beside it would carry the pre-rename `Signal`. Same rev waterui pins.
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }

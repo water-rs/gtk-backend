@@ -5795,8 +5795,3 @@ checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]
-
-[[patch.unused]]
-name = "shaderloom"
-version = "0.1.2"
-source = "git+https://github.com/water-rs/shaderloom?rev=b0b6870c8b560d902c1de9a4d039c3a921b18b92#b0b6870c8b560d902c1de9a4d039c3a921b18b92"
