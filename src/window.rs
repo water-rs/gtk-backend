@@ -7,9 +7,12 @@ use gdk4::prelude::ToplevelExt as _;
 use glib::object::{Cast as _, ObjectExt as _};
 use gtk4::prelude::GtkWindowExt;
 use gtk4::{Application, ApplicationWindow};
-use nami::{Binding, Computed, Signal};
+use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed as _};
 use num_traits::ToPrimitive as _;
-use waterui::window::{WindowIcon, WindowState, WindowStyle};
+use waterui::window::{
+    ResolvedWindowBackground, WindowBackground, WindowIcon, WindowState, WindowStyle,
+    resolve_background,
+};
 use waterui_core::Environment;
 use waterui_graphics::color::WorkingColor;
 
@@ -832,14 +835,38 @@ fn restore_application_icon(window: &ApplicationWindow) {
     }
 }
 
+/// The colour GTK paints behind a window's content, following `background`:
+/// the theme background for an opaque window, the declared colour otherwise,
+/// through both a switch between the two and a change of the colour.
+///
+/// GTK realizes no material: a [`WindowBackground::Material`] draws the
+/// window opaque in the theme's background colour, as
+/// [`WindowBackground::Opaque`] does — the contract of the backends that
+/// realize no material.
+pub fn painted_background(
+    background: &Binding<WindowBackground>,
+    env: &Environment,
+) -> Computed<WorkingColor> {
+    let without_material = background.map(|background| match background {
+        WindowBackground::Material(_) => WindowBackground::Opaque,
+        background => background,
+    });
+    resolve_background(&without_material, env)
+        .map(|resolved| match resolved {
+            ResolvedWindowBackground::Color(color) => color,
+            ResolvedWindowBackground::Material(_) => {
+                unreachable!("every material was mapped to an opaque background above")
+            }
+        })
+        .into_computed()
+}
+
 /// Applies the window's reactive background to a GTK window and keeps
 /// applying its changes.
 ///
-/// `resolved` is the window background resolved with
-/// [`resolve_background`](waterui::window::resolve_background): the theme background for an opaque window, the declared colour otherwise,
-/// following both a switch between the two and a change of the colour. It is
-/// painted as the window's CSS background, so a translucent colour reaches
-/// the compositor.
+/// `resolved` is the colour [`painted_background`] resolves. It is painted as
+/// the window's CSS background, so a translucent colour reaches the
+/// compositor.
 pub fn apply_window_background(window: &ApplicationWindow, resolved: &Computed<WorkingColor>) {
     let css = ScopedCss::attach(
         window,

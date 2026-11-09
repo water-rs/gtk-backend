@@ -199,11 +199,13 @@ impl GtkComponent for Native<ListConfig> {
         });
         let mut guards = vec![contents_guard];
         if let Some(controller) = scroll_controller {
-            let target = controller.target();
+            let request = controller.request();
             let contents = contents.clone();
             let list_view_for_scroll = list_view.clone();
             guards.push(controller.generation().watch(move |_| {
-                let index = target.snapshot();
+                // `GtkListView::scroll_to` has no animated form, so a
+                // request's animation has no motion to select: it jumps.
+                let index = request.snapshot().target;
                 let len = contents.len().snapshot();
                 assert!(
                     index < len,

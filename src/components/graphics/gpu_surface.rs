@@ -36,7 +36,7 @@ use waterui_graphics::cherenkov::{
     Visibility, kurbo,
 };
 use waterui_graphics::cherenkov_gpu::interop::dmabuf::{DmabufFormat, DmabufFrame, DmabufTarget};
-use waterui_graphics::cherenkov_gpu::interop::{GpuContentBox, RedrawCallback, SharedDevice};
+use waterui_graphics::cherenkov_gpu::interop::{GpuContentBox, SharedDevice};
 use waterui_graphics::cherenkov_gpu::{Gpu, GpuConfig};
 use waterui_graphics::gpu::external::FrameReceiver;
 use waterui_graphics::gpu::{DeviceLoss, ExternalFrameView, GpuContentView, RedrawHandle};
@@ -274,13 +274,7 @@ impl HostedLeaf {
                     // call, so a binding rebuilt after device loss re-installs
                     // it with its state intact.
                     let producer = bound.take().map_or_else(
-                        || {
-                            let wake = wake.clone();
-                            engine.gpu_producer(GpuContentBox::new(
-                                view.engine_content(),
-                                move || wake(),
-                            ))
-                        },
+                        || engine.gpu_producer(GpuContentBox::new(view.engine_content())),
                         |binding| binding.producer,
                     );
                     surface.update(|tx| {
@@ -388,25 +382,16 @@ struct EngineStack {
     loss: DeviceLoss,
 }
 
-/// Builds the engine's device and the engine over it, then installs the
-/// host wake and starts observing the device for loss.
-fn build_engine(wake: &Arc<dyn Fn() + Send + Sync>) -> EngineStack {
-    let mut config = GpuConfig {
-        redraw: Some(RedrawCallback::new({
-            let wake = wake.clone();
-            move || wake()
-        })),
-        ..GpuConfig::default()
-    };
+/// Builds the engine's device and the engine over it, and starts observing
+/// the device for loss. The host wake belongs to each surface, which takes it
+/// at creation.
+fn build_engine() -> EngineStack {
+    let mut config = GpuConfig::default();
     let device = SharedDevice::create(&config)
         .unwrap_or_else(|error| panic!("GpuSurfaceHost: SharedDevice::create failed: {error}"));
     config.device = Some(device.clone());
     let engine = Engine::<Gpu>::new(config)
         .unwrap_or_else(|error| panic!("GpuSurfaceHost: Engine::new failed: {error}"));
-    engine.set_waker({
-        let wake = wake.clone();
-        move || wake()
-    });
     let loss = DeviceLoss::observe(&device.device);
     EngineStack {
         device,
@@ -553,8 +538,8 @@ impl GpuSurfaceHost {
     }
 }
 
-/// The `wake` closure shared by `Engine::set_waker`, `GpuConfig::redraw`,
-/// `GpuContentBox`, `ExternalFrameStream` and the scene invalidator. GPU
+/// The `wake` closure shared by the engine surface, `ExternalFrameStream` and
+/// the scene invalidator. GPU
 /// objects are `!Send` and live on the render thread, so it only queues a
 /// draw: it crosses threads inside a `ThreadGuard` and dereferences its
 /// `WeakRef` back on the main context. `idle_add_once` always defers —
@@ -721,6 +706,7 @@ impl imp::GpuSurfaceHost {
             }
         }
 
+        let frame;
         {
             let mut state = state_cell.borrow_mut();
             if state.stack.is_none() {
@@ -730,8 +716,7 @@ impl imp::GpuSurfaceHost {
                     size.width,
                     size.height
                 );
-                let wake = Arc::clone(&state.wake);
-                state.stack = Some(build_engine(&wake));
+                state.stack = Some(build_engine());
             }
             let state = &mut *state;
             if state.formats.is_none() {
@@ -744,18 +729,23 @@ impl imp::GpuSurfaceHost {
                 let formats = state.formats.as_ref().expect("formats just resolved");
                 let (target, frames) = DmabufTarget::new(size.tuple());
                 let target = target.formats(formats.clone());
+                let wake = Arc::clone(&state.wake);
                 let surface = state
                     .stack
                     .as_ref()
                     .expect("stack just built")
                     .engine
-                    .surface(target)
+                    .surface(target, move || wake())
                     .expect("GpuSurfaceHost: dma-buf surface creation failed");
                 state.surface = Some(surface);
                 state.frames = Some(frames);
             }
             let stack = state.stack.as_ref().expect("stack just built");
             let surface = state.surface.as_ref().expect("surface just built");
+            // The edits below belong to the frame this snapshot renders, so
+            // they must not ask the host for another one: the scope is held
+            // until `engine.render` has drawn them.
+            frame = Some(surface.begin_frame());
             if surface.size() != size.tuple() {
                 surface
                     .resize(size.tuple())
@@ -788,6 +778,7 @@ impl imp::GpuSurfaceHost {
                 .engine
                 .render(FrameTime::now())
         };
+        drop(frame);
 
         let next = match result {
             Ok(next) => Some(next),

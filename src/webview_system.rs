@@ -2245,18 +2245,19 @@ impl WebViewHandle for GtkWebViewHandle {
         clippy::future_not_send,
         reason = "a web view and its handle are main-thread-affine"
     )]
-    fn get_cookies(&self) -> impl std::future::Future<Output = Vec<Cookie<'static>>> {
+    fn get_cookies(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> {
         #[cfg(all(
             feature = "webkitgtk",
             gtk_webkitgtk_link_available,
             unix,
             not(target_os = "macos")
         ))]
-        let cookies: BoxFuture<Vec<Cookie<'static>>> = {
+        let cookies: BoxFuture<Result<Vec<Cookie<'static>>, waterui_core::Error>> = {
             let state = Rc::new(RefCell::new(PendingState::new()));
             let data = CookieQueryData {
                 state: Rc::clone(&state),
-                shared: self.shared.clone(),
                 _view: self.widget.clone(),
                 cookie_manager: self.native.cookie_manager,
             };
@@ -2274,7 +2275,8 @@ impl WebViewHandle for GtkWebViewHandle {
             unix,
             not(target_os = "macos")
         )))]
-        let cookies: BoxFuture<Vec<Cookie<'static>>> = webkit_unavailable();
+        let cookies: BoxFuture<Result<Vec<Cookie<'static>>, waterui_core::Error>> =
+            webkit_unavailable();
         cookies
     }
 
@@ -2429,8 +2431,7 @@ struct CookieAddData {
     not(target_os = "macos")
 ))]
 struct CookieQueryData {
-    state: Rc<RefCell<PendingState<Vec<Cookie<'static>>>>>,
-    shared: Rc<SharedState>,
+    state: Rc<RefCell<PendingState<CookieQuery>>>,
     /// Strong, and held for its reference alone: the cookie manager belongs to
     /// the web view, and this query dereferences it in a callback that runs after
     /// the view could otherwise have been dropped.
@@ -2513,7 +2514,17 @@ type JsFuture = Pending<Result<Str, Str>>;
     unix,
     not(target_os = "macos")
 ))]
-type CookieFuture = Pending<Vec<Cookie<'static>>>;
+type CookieFuture = Pending<CookieQuery>;
+
+/// What a cookie query settles with: the cookies, or why the store could not be
+/// read.
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+type CookieQuery = Result<Vec<Cookie<'static>>, waterui_core::Error>;
 
 /// Starts one evaluation. `webkit_web_view_evaluate_javascript` runs the script
 /// as written; `webkit_web_view_call_async_javascript_function` awaits the
@@ -2617,48 +2628,46 @@ unsafe extern "C" fn on_cookies_queried(
             webkitgtk::free_cookie_list(list);
             cookies
         }
-        Err(err) => {
-            data.shared
-                .emit(WebViewEvent::Error(WebViewError::LoadFailed(Str::from(
-                    err,
-                ))));
-            Vec::new()
-        }
+        Err(err) => Err(waterui_core::Error::msg(format!(
+            "WebKitGTK cookie query failed: {err}"
+        ))),
     };
     settle(&data.state, cookies);
 }
 
 /// Reads a `GList` of `SoupCookie` into the shared cookie type.
 ///
-/// A cookie `WebKit` hands back that this parser rejects is reported and skipped:
-/// one malformed cookie in the store used to abort the application from inside a
-/// getter.
+/// A cookie `WebKit` hands back that the contract cannot represent fails the
+/// query, naming the cookie: an error is reported, never a store silently read
+/// short.
 #[cfg(all(
     feature = "webkitgtk",
     gtk_webkitgtk_link_available,
     unix,
     not(target_os = "macos")
 ))]
-fn collect_cookies(list: *mut gtk4::glib::ffi::GList) -> Vec<Cookie<'static>> {
+fn collect_cookies(
+    list: *mut gtk4::glib::ffi::GList,
+) -> Result<Vec<Cookie<'static>>, waterui_core::Error> {
     let mut cookies = Vec::new();
     let mut node = list;
     while !node.is_null() {
         // SAFETY: `node` is a live `GList` node of the list WebKit returned;
         // every element is a `SoupCookie` per `get_cookies_finish`'s contract.
         let cookie = unsafe { (*node).data.cast::<webkitgtk::SoupCookie>() };
-        if let Some(header) = webkitgtk::cookie_to_set_cookie_header(cookie) {
-            match Cookie::parse(header) {
-                Ok(cookie) => cookies.push(cookie.into_owned()),
-                Err(error) => {
-                    tracing::warn!(%error, "skipping a cookie WebKitGTK returned that is not parseable");
-                }
-            }
-        }
+        let header = webkitgtk::cookie_to_set_cookie_header(cookie).ok_or_else(|| {
+            waterui_core::Error::msg("WebKitGTK returned a cookie it cannot serialise")
+        })?;
+        let parsed = Cookie::parse(header.clone()).map_err(|error| {
+            waterui_core::Error::new(error)
+                .context(format!("WebKitGTK returned an unreadable cookie: {header}"))
+        })?;
+        cookies.push(parsed.into_owned());
         // SAFETY: `node` is a live `GList` node; `next` stays valid for the
         // loop's duration since nothing mutates the list.
         node = unsafe { (*node).next };
     }
-    cookies
+    Ok(cookies)
 }
 
 #[cfg(all(

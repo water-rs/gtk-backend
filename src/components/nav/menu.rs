@@ -7,12 +7,13 @@ use gtk4::{MenuButton, Popover, Widget};
 use nami::Signal;
 use waterui::app::Quit;
 use waterui_controls::menu::{
-    CommandExt as _, ResolvedCommand, ResolvedMenu, ResolvedMenuItem, Shortcut,
+    CloseWindowChord, CommandExt as _, MenuItem, ResolvedCommand, ResolvedMenu, ResolvedMenuItem,
+    Shortcut,
 };
 use waterui_core::{Environment, Native};
 
 use crate::component::GtkComponent;
-use crate::menu_shortcuts::{arm_while_mapped, dispatch_in_popover, shortcut_label};
+use crate::menu_shortcuts::{OwnerWindow, arm_while_mapped, dispatch_in_popover, shortcut_label};
 use crate::renderer::GtkRenderer;
 use crate::util::{store_watcher_guard, store_watcher_guards};
 
@@ -78,6 +79,9 @@ pub(crate) fn append_menu_items(
                 if let Some(command) = quit_command(env) {
                     append_command_button(list, &command, env, on_activate);
                 }
+            }
+            ResolvedMenuItem::CloseWindow => {
+                append_command_button(list, &close_window_command(env), env, on_activate);
             }
             ResolvedMenuItem::Divider => {
                 list.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
@@ -181,7 +185,18 @@ pub(crate) fn quit_command(env: &Environment) -> Option<ResolvedCommand> {
     Some(
         "Quit"
             .action(move || quit.request())
-            .shortcut(Shortcut::new("q").command())
+            .shortcut(Shortcut::new('q').command())
             .resolve(env),
     )
+}
+
+/// The Close row for a declared `MenuItem::CloseWindow`: the framework's
+/// label and the application's one decided close chord, closing the window
+/// the command fires in — its action finds that window in the environment
+/// it runs under, so the app's `menu_bar`, resolved before any window
+/// exists, closes the focused window.
+pub(crate) fn close_window_command(env: &Environment) -> ResolvedCommand {
+    MenuItem::close_window_command(env, CloseWindowChord::of(env), |window: OwnerWindow| {
+        window.close();
+    })
 }
