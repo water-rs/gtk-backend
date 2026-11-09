@@ -10,10 +10,12 @@ use executor_core::{
 };
 use gtk4::Application;
 use gtk4::prelude::*;
+use nami::Computed;
 use native_executor::NativeExecutor;
 use waterui::app::{
     App, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost, TerminationKind,
 };
+use waterui_controls::menu::CloseWindowChord;
 use waterui_core::{Environment, View};
 
 use crate::menu_shortcuts::{arm_menu_bar, install_menu_shortcuts};
@@ -21,7 +23,9 @@ use crate::renderer::GtkRenderer;
 use crate::util::{store_watcher_guards, subscribe_then_get};
 #[cfg(feature = "webview-system")]
 use crate::webview::ensure_webview_controller;
-use crate::window::{apply_window_background, create_window, install_inspect_gesture};
+use crate::window::{
+    apply_window_background, create_window, install_inspect_gesture, painted_background,
+};
 
 #[derive(Debug, Clone, Copy, Default)]
 struct GtkMainThreadExecutor;
@@ -371,6 +375,11 @@ impl GtkApp {
             let view = view.clone();
             let mut env = env.clone();
             waterui::inspector::install(&mut env, inspector);
+            // A bare view declares no menu bar, so no command binds the
+            // platform's close chord and Close Window keeps it.
+            if env.get::<CloseWindowChord>().is_none() {
+                env.insert(CloseWindowChord::new(&Computed::constant(Vec::new()), &env));
+            }
             // `activate` returning with a zero use count shuts the run loop
             // down before the deferred window work runs; hold the application
             // until the window itself holds it via `add_window`.
@@ -548,6 +557,7 @@ fn window_mounter(
             let state = window.state.clone();
             let attention = window.attention.clone();
             let style = window.style.clone();
+            let icon = window.icon.clone();
             // `WindowPlacement` is not `Clone` (it owns `Rc<dyn Fn>`), but
             // the record stays the owner — the mount clones the shareable
             // `place` handle and the copyable selector.
@@ -584,11 +594,9 @@ fn window_mounter(
                 install_inspect_gesture(&gtk_window, &env);
                 // Resolved after the theme is installed: an opaque window
                 // paints the theme's background colour.
-                apply_window_background(
-                    &gtk_window,
-                    &waterui::window::resolve_background(&background, &env),
-                );
+                apply_window_background(&gtk_window, &painted_background(&background, &env));
                 crate::window::apply_window_style(&gtk_window, &style);
+                crate::window::apply_window_icon(&gtk_window, &icon);
                 // Placement resolves its selector now — mount time — and
                 // only its size applies: GTK4 gives toplevels no position
                 // API.

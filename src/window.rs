@@ -7,9 +7,12 @@ use gdk4::prelude::ToplevelExt as _;
 use glib::object::{Cast as _, ObjectExt as _};
 use gtk4::prelude::GtkWindowExt;
 use gtk4::{Application, ApplicationWindow};
-use nami::{Binding, Computed, Signal};
+use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed as _};
 use num_traits::ToPrimitive as _;
-use waterui::window::{WindowState, WindowStyle};
+use waterui::window::{
+    ResolvedWindowBackground, WindowBackground, WindowIcon, WindowState, WindowStyle,
+    resolve_background,
+};
 use waterui_core::Environment;
 use waterui_graphics::color::WorkingColor;
 
@@ -742,14 +745,129 @@ const fn style_is_decorated(style: WindowStyle) -> bool {
     !matches!(style, WindowStyle::Borderless)
 }
 
+/// Applies the window's own reactive icon and keeps applying its changes.
+///
+/// A pixel icon lives on the toplevel's icon list, which exists once the
+/// window is realized. GTK fills that list from the window's icon name while
+/// realizing — the application id `install_app_icon` makes the default — so
+/// the window's own icon goes on right after, from the realize handler, and
+/// every later change replaces the list. `None` hands the list back to GTK's
+/// icon name. Whether the list is shown is the windowing system's call: X11
+/// shows it, Wayland compositors without the toplevel-icon protocol keep the
+/// application's icon.
+pub fn apply_window_icon(window: &ApplicationWindow, icon: &Binding<Option<WindowIcon>>) {
+    use gtk4::prelude::*;
+    window.connect_realize({
+        let icon = icon.clone();
+        move |window| {
+            if let Some(icon) = icon.snapshot() {
+                set_window_icon(window, &icon);
+            }
+        }
+    });
+    let (initial, guard) = subscribe_then_get(icon, {
+        let window = window.clone();
+        move |ctx| {
+            let icon = ctx.into_value();
+            let window = window.clone();
+            glib::idle_add_local_once(move || {
+                // An unrealized window picks the newest icon up when it
+                // realizes.
+                if !window.is_realized() {
+                    return;
+                }
+                match icon {
+                    Some(icon) => set_window_icon(&window, &icon),
+                    None => restore_application_icon(&window),
+                }
+            });
+        }
+    });
+    if window.is_realized()
+        && let Some(icon) = initial
+    {
+        set_window_icon(window, &icon);
+    }
+    store_watcher_guard(window, guard);
+}
+
+fn window_toplevel(window: &ApplicationWindow) -> gdk4::Toplevel {
+    use gtk4::prelude::*;
+    window
+        .surface()
+        .expect("a realized window has a surface")
+        .downcast::<gdk4::Toplevel>()
+        .expect("a window's surface is a toplevel")
+}
+
+fn set_window_icon(window: &ApplicationWindow, icon: &WindowIcon) {
+    use gtk4::prelude::*;
+    let width = i32::try_from(icon.width()).expect("icon width fits a GDK texture");
+    let height = i32::try_from(icon.height()).expect("icon height fits a GDK texture");
+    let stride = usize::try_from(icon.width()).expect("icon width fits in memory") * 4;
+    let texture = gdk4::MemoryTexture::new(
+        width,
+        height,
+        gdk4::MemoryFormat::R8g8b8a8,
+        &glib::Bytes::from(icon.rgba()),
+        stride,
+    );
+    window_toplevel(window).set_icon_list(&[texture.upcast()]);
+}
+
+/// Hands the toplevel's icon list back to GTK.
+///
+/// GTK derives the list from the window's icon name — or the default icon
+/// name when the window has none — every time that name changes, so moving
+/// the name away and back makes GTK put the application's icon back.
+fn restore_application_icon(window: &ApplicationWindow) {
+    match (window.icon_name(), gtk4::Window::default_icon_name()) {
+        (Some(own), _) => {
+            window.set_icon_name(None);
+            window.set_icon_name(Some(own.as_str()));
+        }
+        (None, Some(default)) => {
+            window.set_icon_name(Some(default.as_str()));
+            window.set_icon_name(None);
+        }
+        // Without any icon name GTK realizes an empty list.
+        (None, None) => window_toplevel(window).set_icon_list(&[]),
+    }
+}
+
+/// The colour GTK paints behind a window's content, following `background`.
+///
+/// An opaque window paints the theme background and any other the declared
+/// colour, through both a switch between the two and a change of the colour.
+/// GTK realizes no material: a [`WindowBackground::Material`] draws the
+/// window opaque in the theme's background colour, as
+/// [`WindowBackground::Opaque`] does — the contract of the backends that
+/// realize no material.
+#[must_use]
+pub fn painted_background(
+    background: &Binding<WindowBackground>,
+    env: &Environment,
+) -> Computed<WorkingColor> {
+    let without_material = background.map(|background| match background {
+        WindowBackground::Material(_) => WindowBackground::Opaque,
+        background => background,
+    });
+    resolve_background(&without_material, env)
+        .map(|resolved| match resolved {
+            ResolvedWindowBackground::Color(color) => color,
+            ResolvedWindowBackground::Material(_) => {
+                unreachable!("every material was mapped to an opaque background above")
+            }
+        })
+        .into_computed()
+}
+
 /// Applies the window's reactive background to a GTK window and keeps
 /// applying its changes.
 ///
-/// `resolved` is the window background resolved with
-/// [`resolve_background`](waterui::window::resolve_background): the theme background for an opaque window, the declared colour otherwise,
-/// following both a switch between the two and a change of the colour. It is
-/// painted as the window's CSS background, so a translucent colour reaches
-/// the compositor.
+/// `resolved` is the colour [`painted_background`] resolves. It is painted as
+/// the window's CSS background, so a translucent colour reaches the
+/// compositor.
 pub fn apply_window_background(window: &ApplicationWindow, resolved: &Computed<WorkingColor>) {
     let css = ScopedCss::attach(
         window,

@@ -126,11 +126,13 @@ impl GtkComponent for Native<ScrollView> {
                 });
             }
             let generation = controller.generation();
-            let target = controller.target();
+            let request = controller.request();
             let scrolled_for_watch = scrolled_window.downgrade();
             let requested_for_watch = Rc::clone(&requested);
             let guard = generation.watch(move |_| {
-                let target = target.snapshot();
+                // GTK4 animates no adjustment without libadwaita, so a
+                // request's animation has no motion to select: it jumps.
+                let target = request.snapshot().target;
                 requested_for_watch.set(Some(target));
                 let scrolled_window = scrolled_for_watch.clone();
                 glib::idle_add_local_once(move || {

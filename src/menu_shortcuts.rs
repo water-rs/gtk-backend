@@ -22,12 +22,13 @@ use glib::translate::FromGlib as _;
 use gtk4::prelude::*;
 use nami::{Computed, Signal as _};
 use waterui_controls::menu::{
-    Menu, ResolvedCommand, ResolvedMenuItem, Shortcut, resolve_menu_bar_items,
+    Menu, NamedKey, ResolvedCommand, ResolvedMenuItem, Shortcut, ShortcutKey,
+    resolve_menu_bar_items,
 };
 use waterui_core::handler::SharedAction;
-use waterui_core::{Environment, Str};
+use waterui_core::{Environment, Str, impl_extractor};
 
-use crate::components::menu::quit_command;
+use crate::components::menu::{close_window_command, quit_command};
 
 const MISSING_MENU_SHORTCUT_REGISTRY: &str = "menu shortcuts require the window's environment to \
      carry a MenuShortcutRegistry: GtkApp::run and GtkApp::run_app install one per window, and a \
@@ -45,22 +46,88 @@ pub struct Accelerator {
     pub modifiers: gdk4::ModifierType,
 }
 
+/// The GDK keyval a named shortcut key arms.
+///
+/// # Panics
+///
+/// On a named key GDK has no menu-accelerator keyval for.
+fn named_keyval(named: NamedKey) -> gdk4::Key {
+    use gdk4::Key;
+    match named {
+        NamedKey::Backspace => Key::BackSpace,
+        NamedKey::Tab => Key::Tab,
+        NamedKey::Enter => Key::Return,
+        NamedKey::Escape => Key::Escape,
+        NamedKey::Delete => Key::Delete,
+        NamedKey::Insert => Key::Insert,
+        NamedKey::Home => Key::Home,
+        NamedKey::End => Key::End,
+        NamedKey::PageUp => Key::Page_Up,
+        NamedKey::PageDown => Key::Page_Down,
+        NamedKey::ArrowLeft => Key::Left,
+        NamedKey::ArrowUp => Key::Up,
+        NamedKey::ArrowRight => Key::Right,
+        NamedKey::ArrowDown => Key::Down,
+        NamedKey::PrintScreen => Key::Print,
+        NamedKey::Pause => Key::Pause,
+        NamedKey::ContextMenu => Key::Menu,
+        NamedKey::Help => Key::Help,
+        NamedKey::Clear => Key::Clear,
+        NamedKey::Select => Key::Select,
+        NamedKey::Execute => Key::Execute,
+        NamedKey::Find => Key::Find,
+        NamedKey::Undo => Key::Undo,
+        NamedKey::Redo => Key::Redo,
+        NamedKey::F1 => Key::F1,
+        NamedKey::F2 => Key::F2,
+        NamedKey::F3 => Key::F3,
+        NamedKey::F4 => Key::F4,
+        NamedKey::F5 => Key::F5,
+        NamedKey::F6 => Key::F6,
+        NamedKey::F7 => Key::F7,
+        NamedKey::F8 => Key::F8,
+        NamedKey::F9 => Key::F9,
+        NamedKey::F10 => Key::F10,
+        NamedKey::F11 => Key::F11,
+        NamedKey::F12 => Key::F12,
+        NamedKey::F13 => Key::F13,
+        NamedKey::F14 => Key::F14,
+        NamedKey::F15 => Key::F15,
+        NamedKey::F16 => Key::F16,
+        NamedKey::F17 => Key::F17,
+        NamedKey::F18 => Key::F18,
+        NamedKey::F19 => Key::F19,
+        NamedKey::F20 => Key::F20,
+        NamedKey::F21 => Key::F21,
+        NamedKey::F22 => Key::F22,
+        NamedKey::F23 => Key::F23,
+        NamedKey::F24 => Key::F24,
+        _ => panic!(
+            "the shortcut key `{named}` has no GDK accelerator keyval, so a GTK menu cannot arm \
+             it; choose a key GTK menus support"
+        ),
+    }
+}
+
 impl Accelerator {
-    /// The chord `shortcut` arms, `None` when its key is not exactly one
-    /// character. Hydrolysis dispatches only character keys, so a named key
-    /// such as `"Delete"` or `"Enter"` arms nothing there either; what a
-    /// named key means is not settled by the framework, and its name is
-    /// deliberately not resolved through GDK.
-    pub fn from_shortcut(shortcut: &Shortcut) -> Option<Self> {
-        let mut characters = shortcut.key.chars();
-        let (Some(character), None) = (characters.next(), characters.next()) else {
-            return None;
+    /// The chord `shortcut` arms: its character through GDK's Unicode
+    /// keyvals, or its named key's own keyval.
+    ///
+    /// # Panics
+    ///
+    /// On a named key GTK menus cannot arm.
+    pub fn from_shortcut(shortcut: &Shortcut) -> Self {
+        let key = match &shortcut.key {
+            ShortcutKey::Character(character) => {
+                // SAFETY: a GDK keyval is a plain `guint` that `Key` wraps
+                // without further invariants, and `gdk_unicode_to_keyval`
+                // returns a keyval for every code point.
+                let keyval =
+                    unsafe { gdk4::Key::from_glib(gdk4::unicode_to_keyval(u32::from(*character))) };
+                keyval.to_lower()
+            }
+            ShortcutKey::Named(named) => named_keyval(*named),
         };
-        // SAFETY: a GDK keyval is a plain `guint` that `Key` wraps without
-        // further invariants, and `gdk_unicode_to_keyval` returns a keyval
-        // for every code point.
-        let key = unsafe { gdk4::Key::from_glib(gdk4::unicode_to_keyval(u32::from(character))) }
-            .to_lower();
         let flags = shortcut.modifiers;
         let mut modifiers = gdk4::ModifierType::empty();
         modifiers.set(
@@ -69,7 +136,7 @@ impl Accelerator {
         );
         modifiers.set(gdk4::ModifierType::ALT_MASK, flags.option());
         modifiers.set(gdk4::ModifierType::SHIFT_MASK, flags.shift());
-        Some(Self { key, modifiers })
+        Self { key, modifiers }
     }
 
     /// The accelerator text GTK prints for this chord, e.g. `Ctrl+Q`.
@@ -78,26 +145,35 @@ impl Accelerator {
     }
 }
 
-/// The text a menu row shows for `shortcut`: GTK's accelerator label for a
-/// chord, and for a key that arms none the hint Hydrolysis renders on
-/// Linux — its modifiers, then the key text uppercased (`Ctrl+DELETE`).
+/// The text a menu row shows for `shortcut`: GTK's accelerator label for the
+/// chord it arms.
+///
+/// # Panics
+///
+/// On a named key GTK menus cannot arm.
 pub fn shortcut_label(shortcut: &Shortcut) -> String {
-    if let Some(accelerator) = Accelerator::from_shortcut(shortcut) {
-        return accelerator.label().into();
+    Accelerator::from_shortcut(shortcut).label().into()
+}
+
+/// The window an environment's menus are mounted in, as
+/// [`install_menu_shortcuts`] records it: closing it is what a declared
+/// `MenuItem::CloseWindow` does. It is an extractor, so a command's action
+/// finds the window it fires in even when its menu — the app's `menu_bar` —
+/// resolved under an environment older than the window.
+#[derive(Clone, Debug)]
+pub struct OwnerWindow(glib::WeakRef<gtk4::Window>);
+
+impl_extractor!(OwnerWindow);
+
+impl OwnerWindow {
+    /// Asks the window to close through its ordinary close path, so closing
+    /// the last one still follows the application's `LastWindowPolicy`.
+    pub(crate) fn close(&self) {
+        self.0
+            .upgrade()
+            .expect("a window outlives the menus it mounts")
+            .close();
     }
-    let flags = shortcut.modifiers;
-    let mut hint = String::new();
-    if flags.control() || flags.command() {
-        hint.push_str("Ctrl+");
-    }
-    if flags.option() {
-        hint.push_str("Alt+");
-    }
-    if flags.shift() {
-        hint.push_str("Shift+");
-    }
-    hint.push_str(&shortcut.key.to_uppercase());
-    hint
 }
 
 /// Arms menu command shortcuts on `window`.
@@ -121,6 +197,7 @@ pub fn install_menu_shortcuts(window: &gtk4::Window, env: &mut Environment) {
          MenuShortcutRegistry; each window installs its own from the app environment"
     );
     env.insert(MenuShortcutRegistry::default());
+    env.insert(OwnerWindow(window.downgrade()));
     window.add_controller(chord_controller(env.clone()));
 }
 
@@ -166,11 +243,11 @@ pub fn arm_menu_bar(
     menu_bar: &Computed<Vec<Menu>>,
     app_env: &Environment,
 ) {
-    let _app_bar = registry(window_env).register(
-        SourceItems::Live(resolve_menu_bar_items(menu_bar, app_env)),
-        app_env.clone(),
-        None,
-    );
+    let items = resolve_menu_bar_items(menu_bar, app_env);
+    // No menu-bar surface is drawn, so nothing else converts its shortcuts
+    // before a key press does: a key GTK cannot arm panics here instead.
+    collect_chords(&items.snapshot(), app_env, &mut Vec::new());
+    let _app_bar = registry(window_env).register(SourceItems::Live(items), app_env.clone(), None);
 }
 
 /// Arms a mounted `Menu`'s chords while `widget` is mapped: mapping
@@ -385,7 +462,8 @@ impl MenuShortcutRegistry {
 
 /// Flattens menu items into their chords, nested menus included. A
 /// declared Quit arms the chord of [`quit_command`], and nothing where
-/// `env` has no application quit.
+/// `env` has no application quit; a declared Close Window arms the
+/// application's decided chord of [`close_window_command`].
 fn collect_chords(items: &[ResolvedMenuItem], env: &Environment, out: &mut Vec<Chord>) {
     for item in items {
         match item {
@@ -395,6 +473,9 @@ fn collect_chords(items: &[ResolvedMenuItem], env: &Environment, out: &mut Vec<C
                     collect_command_chord(&command, out);
                 }
             }
+            ResolvedMenuItem::CloseWindow => {
+                collect_command_chord(&close_window_command(env), out);
+            }
             ResolvedMenuItem::Menu(menu) => collect_chords(&menu.items.snapshot(), env, out),
             ResolvedMenuItem::Divider => {}
         }
@@ -402,13 +483,9 @@ fn collect_chords(items: &[ResolvedMenuItem], env: &Environment, out: &mut Vec<C
 }
 
 fn collect_command_chord(command: &ResolvedCommand, out: &mut Vec<Chord>) {
-    if let Some(accelerator) = command
-        .shortcut
-        .as_ref()
-        .and_then(Accelerator::from_shortcut)
-    {
+    if let Some(shortcut) = &command.shortcut {
         out.push(Chord {
-            accelerator,
+            accelerator: Accelerator::from_shortcut(shortcut),
             action: command.action.clone(),
             disabled: command.disabled.clone(),
             label: command.label.content.snapshot().to_plain(),
@@ -436,13 +513,8 @@ mod tests {
         gtk4::init().expect("GTK tests need a display; run them under xvfb-run");
     }
 
-    fn accelerator(shortcut: &Shortcut) -> Accelerator {
-        Accelerator::from_shortcut(shortcut)
-            .unwrap_or_else(|| panic!("{:?} arms a chord", shortcut.key.as_str()))
-    }
-
-    fn ctrl(key: &'static str) -> Accelerator {
-        accelerator(&Shortcut::new(key).command())
+    fn ctrl(key: char) -> Accelerator {
+        Accelerator::from_shortcut(&Shortcut::new(key).command())
     }
 
     fn press(registry: &MenuShortcutRegistry, pressed: Accelerator) -> bool {
@@ -467,7 +539,7 @@ mod tests {
     #[test]
     fn command_is_ctrl_on_linux() {
         init();
-        let quit = ctrl("q");
+        let quit = ctrl('q');
         assert_eq!(
             quit,
             Accelerator {
@@ -485,22 +557,22 @@ mod tests {
     fn shortcut_modifiers_map_to_gdk_masks() {
         init();
         let cases = [
-            (Shortcut::new("k"), ModifierType::empty()),
-            (Shortcut::new("k").control(), ModifierType::CONTROL_MASK),
-            (Shortcut::new("k").option(), ModifierType::ALT_MASK),
-            (Shortcut::new("k").shift(), ModifierType::SHIFT_MASK),
+            (Shortcut::new('k'), ModifierType::empty()),
+            (Shortcut::new('k').control(), ModifierType::CONTROL_MASK),
+            (Shortcut::new('k').option(), ModifierType::ALT_MASK),
+            (Shortcut::new('k').shift(), ModifierType::SHIFT_MASK),
             (
-                Shortcut::new("k").command().control(),
+                Shortcut::new('k').command().control(),
                 ModifierType::CONTROL_MASK,
             ),
             (
-                Shortcut::new("k").command().shift().option(),
+                Shortcut::new('k').command().shift().option(),
                 ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK | ModifierType::ALT_MASK,
             ),
         ];
         for (shortcut, modifiers) in cases {
             assert_eq!(
-                accelerator(&shortcut),
+                Accelerator::from_shortcut(&shortcut),
                 Accelerator {
                     key: gdk4::Key::k,
                     modifiers,
@@ -514,52 +586,65 @@ mod tests {
     fn shortcut_keys_map_to_lowercase_keyvals() {
         init();
         let cases = [
-            ("Q", gdk4::Key::q),
-            ("1", gdk4::Key::_1),
-            (",", gdk4::Key::comma),
-            (" ", gdk4::Key::space),
+            ('Q', gdk4::Key::q),
+            ('1', gdk4::Key::_1),
+            (',', gdk4::Key::comma),
+            (' ', gdk4::Key::space),
         ];
         for (key, keyval) in cases {
             assert_eq!(ctrl(key).key, keyval, "{key:?}");
         }
     }
 
-    /// As on Hydrolysis: a named key arms nothing, whatever the name, and
-    /// its row shows the key text uppercased after its modifiers.
+    /// A named key arms its own GDK keyval, and its row shows the label GTK
+    /// prints for that chord.
     #[test]
-    fn a_named_key_arms_no_chord_and_shows_its_key_text() {
+    fn a_named_key_arms_its_keyval_and_shows_gtks_label() {
         init();
         let env = Environment::new();
         let fired = Rc::new(Cell::new(0));
-        let items = vec![
-            ResolvedMenuItem::Command(
-                counting_command("Remove", Shortcut::new("Delete").command(), &fired).resolve(&env),
-            ),
-            ResolvedMenuItem::Command(
-                counting_command("Confirm", Shortcut::new("Enter").shift(), &fired).resolve(&env),
-            ),
-        ];
-        for key in ["Delete", "Enter", ""] {
-            assert_eq!(
-                Accelerator::from_shortcut(&Shortcut::new(key)),
-                None,
-                "{key:?}"
-            );
-        }
+        let remove = Shortcut::new(NamedKey::Delete).command();
+        let confirm = Shortcut::new(NamedKey::Enter).shift();
+        let delete_chord = Accelerator {
+            key: gdk4::Key::Delete,
+            modifiers: ModifierType::CONTROL_MASK,
+        };
+        let enter_chord = Accelerator {
+            key: gdk4::Key::Return,
+            modifiers: ModifierType::SHIFT_MASK,
+        };
+        assert_eq!(Accelerator::from_shortcut(&remove), delete_chord);
+        assert_eq!(Accelerator::from_shortcut(&confirm), enter_chord);
 
+        let items = vec![
+            ResolvedMenuItem::Command(counting_command("Remove", remove, &fired).resolve(&env)),
+            ResolvedMenuItem::Command(counting_command("Confirm", confirm, &fired).resolve(&env)),
+        ];
         let registry = MenuShortcutRegistry::default();
         let _source = registry.register(SourceItems::Open(items.clone().into()), env.clone(), None);
-        assert!(
-            !registry.dispatch(&env, |_| true),
-            "no chord is armed for a named key"
-        );
-        assert_eq!(fired.get(), 0);
+        assert!(press(&registry, delete_chord));
+        assert_eq!(fired.get(), 1, "the named key's chord fires its command");
+        assert!(!press(&registry, ctrl('d')), "another key passes");
 
         let popover = gtk4::Popover::new();
         rebuild_menu_popover(&popover, items, &env);
         let mut labels = Vec::new();
         label_texts(popover.upcast_ref(), &mut labels);
-        assert_eq!(labels, ["Remove", "Ctrl+DELETE", "Confirm", "Shift+ENTER"]);
+        assert_eq!(
+            labels,
+            [
+                "Remove",
+                delete_chord.label().as_str(),
+                "Confirm",
+                enter_chord.label().as_str()
+            ]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "has no GDK accelerator keyval")]
+    fn a_named_key_without_a_keyval_panics() {
+        let _ = Accelerator::from_shortcut(&Shortcut::new(NamedKey::AudioVolumeUp));
     }
 
     fn label_texts(widget: &gtk4::Widget, out: &mut Vec<String>) {
@@ -596,7 +681,7 @@ mod tests {
             &popover,
             vec![
                 ResolvedMenuItem::Command(
-                    counting_command("Open", Shortcut::new("o").command(), &fired).resolve(&env),
+                    counting_command("Open", Shortcut::new('o').command(), &fired).resolve(&env),
                 ),
                 ResolvedMenuItem::Command("Plain".action(|| {}).resolve(&env)),
             ],
@@ -633,17 +718,17 @@ mod tests {
         let registry = MenuShortcutRegistry::default();
         let fired = Rc::new(Cell::new(0));
         let disabled = nami::binding(true);
-        let save = counting_command("Save", Shortcut::new("s").command(), &fired)
+        let save = counting_command("Save", Shortcut::new('s').command(), &fired)
             .disabled(disabled.clone())
             .resolve(&env);
         let _source = registry.register(live(vec![ResolvedMenuItem::Command(save)]), env, None);
 
-        assert!(press(&registry, ctrl("s")), "a disabled command claims");
+        assert!(press(&registry, ctrl('s')), "a disabled command claims");
         assert_eq!(fired.get(), 0, "a disabled command does not fire");
-        assert!(!press(&registry, ctrl("x")), "an unarmed chord passes");
+        assert!(!press(&registry, ctrl('x')), "an unarmed chord passes");
 
         disabled.set(false);
-        assert!(press(&registry, ctrl("s")));
+        assert!(press(&registry, ctrl('s')));
         assert_eq!(fired.get(), 1, "the re-enabled command fires");
     }
 
@@ -656,24 +741,24 @@ mod tests {
         let second = Rc::new(Cell::new(0));
         let older = registry.register(
             live(vec![ResolvedMenuItem::Command(
-                counting_command("First", Shortcut::new("k").command(), &first).resolve(&env),
+                counting_command("First", Shortcut::new('k').command(), &first).resolve(&env),
             )]),
             env.clone(),
             None,
         );
         let newer = registry.register(
             live(vec![ResolvedMenuItem::Command(
-                counting_command("Second", Shortcut::new("k").control(), &second).resolve(&env),
+                counting_command("Second", Shortcut::new('k').control(), &second).resolve(&env),
             )]),
             env,
             None,
         );
 
-        assert!(press(&registry, ctrl("k")));
+        assert!(press(&registry, ctrl('k')));
         assert_eq!((first.get(), second.get()), (0, 1), "the newer source wins");
 
         registry.unregister(newer);
-        assert!(press(&registry, ctrl("k")));
+        assert!(press(&registry, ctrl('k')));
         assert_eq!(
             (first.get(), second.get()),
             (1, 1),
@@ -681,7 +766,7 @@ mod tests {
         );
 
         registry.unregister(older);
-        assert!(!press(&registry, ctrl("k")), "no source arms the chord");
+        assert!(!press(&registry, ctrl('k')), "no source arms the chord");
     }
 
     #[test]
@@ -694,11 +779,11 @@ mod tests {
         let mounted = Rc::new(Cell::new(0));
         let menu_bar = Computed::constant(vec![Menu::new(
             "App",
-            counting_command("Close", Shortcut::new("w").control(), &bar),
+            counting_command("Close", Shortcut::new('w').control(), &bar),
         )]);
         arm_menu_bar(&window_env, &menu_bar, &Environment::new());
 
-        assert!(press(&registry, ctrl("w")));
+        assert!(press(&registry, ctrl('w')));
         assert_eq!(
             bar.get(),
             1,
@@ -707,17 +792,17 @@ mod tests {
 
         let menu = registry.register(
             live(vec![ResolvedMenuItem::Command(
-                counting_command("Close Tab", Shortcut::new("w").command(), &mounted)
+                counting_command("Close Tab", Shortcut::new('w').command(), &mounted)
                     .resolve(&window_env),
             )]),
             window_env.clone(),
             None,
         );
-        assert!(press(&registry, ctrl("w")));
+        assert!(press(&registry, ctrl('w')));
         assert_eq!((bar.get(), mounted.get()), (1, 1), "the mounted menu wins");
 
         registry.unregister(menu);
-        assert!(press(&registry, ctrl("w")));
+        assert!(press(&registry, ctrl('w')));
         assert_eq!((bar.get(), mounted.get()), (2, 1), "the app bar resumes");
     }
 
@@ -743,11 +828,11 @@ mod tests {
                         WindowMark,
                     >| seen.set(Some(mark.0))
                 })
-                .shortcut(Shortcut::new("m").command()),
+                .shortcut(Shortcut::new('m').command()),
         )]);
         arm_menu_bar(&window_env, &menu_bar, &app_env);
 
-        let pressed = ctrl("m");
+        let pressed = ctrl('m');
         assert!(registry(&window_env).dispatch(&window_env, |accelerator| accelerator == pressed));
         assert_eq!(
             seen.get(),
@@ -782,7 +867,7 @@ mod tests {
         let menu_bar = Computed::constant(vec![Menu::new("App", MenuItem::Quit)]);
         arm_menu_bar(&window_env, &menu_bar, &app_env);
 
-        assert!(press(&registry, ctrl("q")));
+        assert!(press(&registry, ctrl('q')));
         assert_eq!(
             terminated.0.get(),
             1,
@@ -799,7 +884,7 @@ mod tests {
         let menu_bar = Computed::constant(vec![Menu::new("App", MenuItem::Quit)]);
         arm_menu_bar(&window_env, &menu_bar, &Environment::new());
 
-        assert!(!press(&registry, ctrl("q")));
+        assert!(!press(&registry, ctrl('q')));
     }
 }
 
@@ -850,7 +935,7 @@ mod windowed_tests {
             let item = ResolvedMenuItem::Command(
                 "Sentinel"
                     .action(counter_action(&fired))
-                    .shortcut(Shortcut::new("m").command())
+                    .shortcut(Shortcut::new('m').command())
                     .resolve(env),
             );
             let _source =
@@ -926,7 +1011,7 @@ mod windowed_tests {
             "File",
             "Open"
                 .action(counter_action(&fired))
-                .shortcut(Shortcut::new("k").command()),
+                .shortcut(Shortcut::new('k').command()),
         );
         let menu_widget = GtkRenderer::new().render(menu, &env);
         let entry = gtk4::Entry::new();
@@ -982,7 +1067,7 @@ mod windowed_tests {
         let items = vec![ResolvedMenuItem::Command(
             "Copy"
                 .action(counter_action(&fired))
-                .shortcut(Shortcut::new("j").command())
+                .shortcut(Shortcut::new('j').command())
                 .resolve(&env),
         )];
 
