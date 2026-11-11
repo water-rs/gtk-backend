@@ -4,7 +4,7 @@ use gtk4::Widget;
 use gtk4::prelude::*;
 use waterui_core::{Environment, Native};
 use waterui_graphics::Gradient;
-use waterui_graphics::cherenkov::{ColorStop, Paint, SweepGradient};
+use waterui_graphics::backend::cherenkov::{ColorStop, Paint, SweepGradient};
 use waterui_graphics::color::{WorkingColor, working};
 
 use crate::component::GtkComponent;

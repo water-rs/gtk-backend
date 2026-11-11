@@ -53,8 +53,9 @@ use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::picker::multi_date::MultiDatePickerConfig;
 use waterui_form::secure::SecureFieldConfig;
+use waterui_graphics::backend::{FilteredView, Picture, SceneView};
 use waterui_graphics::{
-    ExternalFrameView, FilteredView, GpuContentView, Gradient, Picture, SceneView,
+    ExternalFrameView, GpuContentView, Gradient,
     color::{Color, WorkingColor},
 };
 use waterui_icon::SystemIcon;

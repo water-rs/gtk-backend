@@ -15,8 +15,8 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{Widget, gdk, glib, graphene};
 use waterui_core::{Environment, Native, Signal};
-use waterui_graphics::Picture;
-use waterui_graphics::raster::rasterize_picture;
+use waterui_graphics::backend::Picture;
+use waterui_graphics::backend::raster::rasterize_picture;
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;

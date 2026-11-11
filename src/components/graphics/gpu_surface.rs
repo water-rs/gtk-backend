@@ -31,19 +31,20 @@ use gtk4::prelude::*;
 use gtk4::{Widget, graphene};
 use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
 use waterui_core::{Environment, Native, NativeView};
-use waterui_graphics::cherenkov::{
-    Display, Draw, Engine, Fixed, FrameSink, FrameTime, GpuProducer, Next, RenderError, Surface,
-    Visibility, kurbo,
+use waterui_graphics::backend::cherenkov::{
+    Draw, Engine, Fixed, FrameSink, GpuProducer, Next, RenderError, Surface, Visibility, kurbo,
 };
-use waterui_graphics::cherenkov_gpu::interop::dmabuf::{DmabufFormat, DmabufFrame, DmabufTarget};
-use waterui_graphics::cherenkov_gpu::interop::{GpuContentBox, SharedDevice};
-use waterui_graphics::cherenkov_gpu::{Gpu, GpuConfig};
-use waterui_graphics::gpu::external::FrameReceiver;
-use waterui_graphics::gpu::{DeviceLoss, ExternalFrameView, GpuContentView, RedrawHandle};
-use waterui_graphics::input::SurfaceInputEvent;
-use waterui_graphics::{
+use waterui_graphics::backend::cherenkov_gpu::GpuConfig;
+use waterui_graphics::backend::{
     HeldResources, SceneResources, SceneView, resolve_scene_proposal, scene_stretch_axis,
 };
+use waterui_graphics::gpu::external::FrameReceiver;
+use waterui_graphics::gpu::interop::dmabuf::{DmabufFormat, DmabufFrame, DmabufTarget};
+use waterui_graphics::gpu::interop::{GpuContentBox, SharedDevice};
+use waterui_graphics::gpu::{
+    DeviceLoss, Display, ExternalFrameView, FrameTime, Gpu, GpuContentView, RedrawHandle,
+};
+use waterui_graphics::input::SurfaceInputEvent;
 
 use crate::browser_input::{SurfaceInputSink, install as install_surface_input};
 use crate::component::GtkComponent;

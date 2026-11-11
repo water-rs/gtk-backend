@@ -18,11 +18,11 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use gdk4::prelude::DisplayExt;
 
-use waterui_graphics::cherenkov_gpu::interop::dmabuf::{
+use waterui_graphics::gpu::interop::dmabuf::{
     DRM_FORMAT_ABGR8888, DRM_FORMAT_ABGR16161616F, DRM_FORMAT_ARGB8888, DRM_FORMAT_XBGR8888,
     DRM_FORMAT_XRGB8888, DmabufFormat, DmabufFrame,
 };
-use waterui_graphics::cherenkov_gpu::interop::{OutputAlpha, OutputColor, RgbAlpha};
+use waterui_graphics::gpu::interop::{OutputAlpha, OutputColor, RgbAlpha};
 
 /// `linux/dma-buf.h`: the exported sync file waits on the buffer's
 /// writers (a reader's `POLLIN` equivalent).

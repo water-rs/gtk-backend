@@ -31,10 +31,10 @@ use gtk4::gsk;
 use gtk4::prelude::*;
 use gtk4::{Orientation, Widget};
 use waterui_core::{Environment, Native};
-use waterui_graphics::filter_view::{AnyEffect, ErasedEffect, FilteredView, ParamGuards};
-use waterui_graphics::filtrate::{
+use waterui_graphics::backend::filtrate::{
     EffectContext, EffectFrameClock, EffectInput, EffectOutput, ShapeTextures,
 };
+use waterui_graphics::backend::{AnyEffect, ErasedEffect, FilteredView, ParamGuards};
 
 use super::gl_util::{GlProcResolver, make_gl_resolver, texture_format_desc};
 use crate::component::GtkComponent;
