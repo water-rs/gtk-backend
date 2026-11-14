@@ -9,5 +9,9 @@ changelog_update = true
 
 [[package]]
 name = "waterui-gtk"
+# cargo-semver-checks builds in a synthetic wrapper workspace where
+# `[patch.crates-io]` in this manifest is ignored, resolving crates.io baselines
+# that do not match git-pinned `waterui-*` dependencies.
+semver_check = false
 git_release_name = "v{{ version }}"
 git_tag_name = "v{{ version }}"
