@@ -59,12 +59,12 @@ EOF
 
 # The map example builds `waterui-map-gpu` from crates.io, which only ever
 # contains released fixes. A nightly exists to catch integration breakage in
-# the latest code, so pin it to the map-gpu dev head resolved at run time —
-# the same "exact commit on dev" mechanism used for unreleased work
+# the latest code, so pin it to the map-gpu main head resolved at run time —
+# the same "exact commit on main" mechanism used for unreleased work
 # everywhere else.
-map_gpu_rev=$(git ls-remote https://github.com/water-rs/map-gpu.git dev | cut -f1)
+map_gpu_rev=$(git ls-remote https://github.com/water-rs/map-gpu.git main | cut -f1)
 if [[ -z ${map_gpu_rev} ]]; then
-    echo "could not resolve water-rs/map-gpu dev head" >&2
+    echo "could not resolve water-rs/map-gpu main head" >&2
     exit 1
 fi
 echo "Using waterui-map-gpu rev: ${map_gpu_rev}"
