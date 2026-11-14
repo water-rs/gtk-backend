@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prepares a waterui checkout for driving the examples: clones waterui at the
-# requested ref (dev for the nightly), initializes whatever submodules that
+# requested ref (main for the nightly), initializes whatever submodules that
 # revision still records (none, since water-rs/waterui#937; older revisions
 # carry workspace members there), places this repository's tested tree at
 # `backends/gtk`, and rewrites the checkout's `waterui-gtk` workspace
@@ -13,7 +13,7 @@ set -euo pipefail
 
 repo_root="${GITHUB_WORKSPACE:-$(pwd)}"
 waterui_dir="${repo_root}/waterui"
-waterui_ref="${WATERUI_REF:-dev}"
+waterui_ref="${WATERUI_REF:-main}"
 
 echo "Using waterui ref: ${waterui_ref}"
 rm -rf "${waterui_dir}"

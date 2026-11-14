@@ -2,7 +2,7 @@ name: Nightly E2E
 
 # The repository's heavyweight coverage contract: drive every WaterUI example
 # through the real backend once a day and compare a settled window capture
-# against a checked-in golden. The suite builds waterui@dev with this commit
+# against a checked-in golden. The suite builds waterui@main with this commit
 # injected at `backends/gtk`, so it proves the examples a user runs today still
 # work against the backend under test — the same role the apple-backend and
 # android-backend nightlies play, and the coverage the main repository's
@@ -105,13 +105,12 @@ jobs:
           # which the workspace entry above does not cover.
           cache-directories: ~/.water/build_cache/target
 
-      # The CLI lives in water-rs/cli since water-rs/waterui#899; install its
-      # dev branch so the e2e exercises the same generation logic the
-      # checkouts are written for.
+      # Install the water CLI from water-rs/waterui's main branch so the e2e
+      # exercises the same generation logic the checkouts are written for.
       - name: Install the water CLI
         run: |
-          git clone --depth 1 --branch dev https://github.com/water-rs/cli.git water-cli
-          cargo install --path water-cli --locked \
+          git clone --depth 1 --branch main https://github.com/water-rs/waterui.git waterui-cli-src
+          cargo install --path waterui-cli-src/cli --locked \
             --target-dir "${{ github.workspace }}/e2e-target" \
             --root "${{ github.workspace }}/cli-bin"
 
