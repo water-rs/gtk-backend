@@ -99,7 +99,6 @@ pub(crate) fn append_menu_items(
                 rebuild_menu_popover(&popover, menu.items.snapshot(), env);
 
                 let guard = menu.items.watch({
-                    let popover = popover.clone();
                     let env = env.clone();
                     move |ctx| {
                         let items = ctx.into_value();
