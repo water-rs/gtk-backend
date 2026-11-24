@@ -16,7 +16,7 @@ use waterui::accessibility::{
     AccessibilityChecked, AccessibilityChildren, AccessibilityHidden, AccessibilityLabel,
     AccessibilityRole, AccessibilityState, AccessibilityStateSignal, AccessibilityValue,
 };
-use waterui::background::{Background, MaterialBackground};
+use waterui::background::MaterialBackground;
 use waterui::border::Border;
 use waterui::component::badge::BadgeConfig;
 use waterui::component::list::ListConfig;
@@ -1787,9 +1787,6 @@ impl GtkRenderer {
 
         // Metadata<IgnoreSafeArea> - passthrough on GTK windowing model
         Self::register_passthrough_metadata::<IgnoreSafeArea>(dispatcher);
-
-        // Metadata<Background> - passthrough for compatibility with metadata-based callers
-        Self::register_passthrough_metadata::<Background>(dispatcher);
 
         Self::register_passthrough_metadata::<NavigationTransitionSource>(dispatcher);
         Self::register_passthrough_metadata::<NavigationTransitionDestination>(dispatcher);
